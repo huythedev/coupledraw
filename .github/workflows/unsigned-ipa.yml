@@ -25,7 +25,26 @@ jobs:
           if-no-files-found: error
 
       - name: Publish unsigned IPA to GitHub Releases
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/CoupleDraw-unsigned.ipa --verify-tag --generate-notes
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          ipa=dist/CoupleDraw-unsigned.ipa
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="build-${GITHUB_RUN_NUMBER}"
+          fi
+
+          # Re-running a successful build replaces that run's asset.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$ipa" --clobber
+          elif [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            gh release create "$tag" "$ipa" --verify-tag --generate-notes
+          else
+            gh release create "$tag" "$ipa" --target "$GITHUB_SHA" \
+              --title "CoupleDraw unsigned build #${GITHUB_RUN_NUMBER}" \
+              --notes "Unsigned IPA from commit ${GITHUB_SHA}. Sign the app and embedded widget before installing on an iPhone."
+          fi
