@@ -31,6 +31,7 @@
 		F525DC24A8DA9798629E8E3E /* FullScreenCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 212A75CCB3E28839108D0881 /* FullScreenCanvasView.swift */; };
 		FA700B5F4A26BE2FBF81A308 /* SharedWhiteboardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1988D44075226FAA20DB7B37 /* SharedWhiteboardTests.swift */; };
 		FC1D4C0F5C7E077279D96F62 /* PartnerTargetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51643CA4A5C466217339A4FA /* PartnerTargetView.swift */; };
+		FBB47FD8A1B5836EF8D316A7 /* StickerEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC7FFADCF1343175EACC1EEB /* StickerEditor.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -96,6 +97,7 @@
 		F5E0E4512969530383AB07F0 /* CanvasStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasStoreTests.swift; sourceTree = "<group>"; };
 		F69417827A36EF2F289E27CF /* PairSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairSync.swift; sourceTree = "<group>"; };
 		FDD4F6179B3A2A11055053F2 /* PushProduction.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PushProduction.entitlements; sourceTree = "<group>"; };
+		CC7FFADCF1343175EACC1EEB /* StickerEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickerEditor.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -172,6 +174,7 @@
 				BC297892E4EF9D3471D8F22E /* PushAppDelegate.swift */,
 				A1DF302D802A8E3E0657EAD7 /* RevisionHistory.swift */,
 				D13E3E38FD2B4DE76647EB76 /* SharedWhiteboard.swift */,
+				CC7FFADCF1343175EACC1EEB /* StickerEditor.swift */,
 				9BE0526874A4438AD093D279 /* WallpaperRenderer.swift */,
 				DDEB7C3416986E013F256BCE /* WallpaperSetupView.swift */,
 			);
@@ -362,6 +365,7 @@
 				7FDB3A36C54B94593C47DF4D /* PushAppDelegate.swift in Sources */,
 				77A214C1EE7EF6FE9D4F918E /* RevisionHistory.swift in Sources */,
 				3D15D64B13EF21B115E07F84 /* SharedWhiteboard.swift in Sources */,
+				FBB47FD8A1B5836EF8D316A7 /* StickerEditor.swift in Sources */,
 				43B94C9C2EFE22519BC5E3AD /* WallpaperRenderer.swift in Sources */,
 				9AFDB7C37851987C7C132275 /* WallpaperSetupView.swift in Sources */,
 			);
@@ -550,3 +554,4 @@
 	};
 	rootObject = 98F54143AB4E86B28C3AFEE0 /* Project object */;
 }
+

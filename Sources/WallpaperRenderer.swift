@@ -44,6 +44,18 @@ enum WallpaperRenderer {
             UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
                 drawing.image(from: bounds, scale: max(scale, 1)).draw(in: fit)
             }
+            context.cgContext.saveGState()
+            context.cgContext.clip(to: CGRect(origin: .zero, size: pixels))
+            for sticker in document.stickers {
+                guard let image = BackgroundPhotoLayout.image(sticker.data) else { continue }
+                let rect = StickerImages.rect(sticker, imageSize: image.size, canvas: pixels)
+                context.cgContext.saveGState()
+                context.cgContext.translateBy(x: rect.midX, y: rect.midY)
+                context.cgContext.rotate(by: CGFloat(sticker.rotation * .pi / 180))
+                image.draw(in: CGRect(x: -rect.width / 2, y: -rect.height / 2, width: rect.width, height: rect.height))
+                context.cgContext.restoreGState()
+            }
+            context.cgContext.restoreGState()
         }
     }
 

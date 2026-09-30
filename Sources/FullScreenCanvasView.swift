@@ -15,6 +15,7 @@ struct FullScreenCanvasView: View {
     @State private var canvasGeneration = UUID()
     @State private var showClearConfirmation = false
     @State private var showPhotoEditor = false
+    @State private var showStickerEditor = false
     @State private var viewport: CanvasViewport?
 
     private var record: CanvasRecord { store.displayedRecord(slot) }
@@ -94,6 +95,7 @@ struct FullScreenCanvasView: View {
                                        }
                                    })
                     .id("\(record.canvasID.uuidString)-\(record.drawingHeight)-\(shared)-\(generation)")
+                    ZoomedStickerArtwork(stickers: record.stickers, viewport: viewport)
                 }
                 .frame(width: drawingSize.width * fit, height: drawingSize.height * fit)
                 .overlay(RoundedRectangle(cornerRadius: 2).stroke(.gray, lineWidth: 1))
@@ -164,6 +166,20 @@ struct FullScreenCanvasView: View {
                         Label("Photo", systemImage: "photo")
                     }
                     .buttonStyle(.bordered)
+                    Button { finishEditing(); showStickerEditor = true } label: {
+                        Label("Stickers", systemImage: "face.smiling")
+                    }
+                    .buttonStyle(.bordered)
+                    Spacer(minLength: 0)
+                    Button("Fit") {
+                        if let canvasView {
+                            canvasView.setZoomScale(canvasView.minimumZoomScale, animated: true)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(.horizontal)
+                HStack(spacing: 12) {
                     if record.backgroundPhoto == nil {
                         Button { setBackground("#000000") } label: {
                             Circle().fill(.black).frame(width: 28, height: 28)
@@ -180,12 +196,6 @@ struct FullScreenCanvasView: View {
                         Text("Photo background").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
-                    Button("Fit") {
-                        if let canvasView {
-                            canvasView.setZoomScale(canvasView.minimumZoomScale, animated: true)
-                        }
-                    }
-                    .buttonStyle(.bordered)
                 }
                 .padding(.horizontal)
             }
@@ -196,6 +206,10 @@ struct FullScreenCanvasView: View {
         .onDisappear { finishEditing() }
         .sheet(isPresented: $showPhotoEditor) {
             BackgroundPhotoEditor(slot: slot)
+                .environmentObject(store).environmentObject(sync)
+        }
+        .sheet(isPresented: $showStickerEditor) {
+            StickerEditor(slot: slot)
                 .environmentObject(store).environmentObject(sync)
         }
         .confirmationDialog(shared ? "Clear all strokes from Our art?" :
@@ -253,6 +267,7 @@ struct FullScreenCanvasView: View {
                 CanvasArtworkView(drawingData: record.drawingData,
                                   drawingSize: size)
                     .equatable()
+                StickerArtworkView(stickers: record.stickers)
                 Rectangle()
                     .fill(Color.accentColor.opacity(0.16))
                     .overlay(Rectangle().strokeBorder(Color.accentColor, lineWidth: 2))
