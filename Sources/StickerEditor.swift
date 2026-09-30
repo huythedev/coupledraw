@@ -152,7 +152,9 @@ struct StickerEditor: View {
                         Button("Reset tilt") { var sticker = selected; sticker.rotation = 0; update(sticker) }
                         Spacer()
                         Button("Delete", role: .destructive) {
-                            stickers.removeAll { $0.id == selected.id }; selection = nil; save()
+                            stickers.removeAll { $0.id == selected.id }
+                            selection = stickers.last?.id
+                            save()
                         }
                     }.buttonStyle(.bordered).padding(.horizontal)
                 }
