@@ -105,7 +105,8 @@ struct EditorView: View {
         .sheet(isPresented: $showTarget) { PartnerTargetView() }
         .sheet(isPresented: $showPairing) { PairingView() }
         .fullScreenCover(isPresented: $showFullScreen) {
-            FullScreenCanvasView(slot: slot, tool: $tool, inkColor: $inkColor, size: $size)
+            FullScreenCanvasView(slot: slot, isPresented: $showFullScreen,
+                                 tool: $tool, inkColor: $inkColor, size: $size)
                 .environmentObject(store).environmentObject(sync)
         }
         .alert("Could not save", isPresented: Binding(
