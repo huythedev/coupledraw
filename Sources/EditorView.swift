@@ -164,6 +164,7 @@ struct EditorView: View {
                         CanvasArtworkView(drawingData: record.drawingData,
                                           drawingSize: drawingSize)
                             .equatable()
+                        StickerArtworkView(stickers: record.stickers)
                     }
                     .frame(width: drawingSize.width * fit, height: drawingSize.height * fit)
                     .clipShape(RoundedRectangle(cornerRadius: 5))

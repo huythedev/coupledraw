@@ -34,6 +34,7 @@ class WhiteboardHTTPTests(unittest.TestCase):
                 db.execute("INSERT INTO members VALUES (?, ?, ?)",
                            (hashlib.sha256(token.encode()).hexdigest(), "pair" if role != "other" else "other", "A" if role == "other" else role))
         self.processes = []
+        self.addCleanup(self.cleanup_resources)
         self.port = self.start_server()
 
     def start_server(self):
@@ -41,20 +42,23 @@ class WhiteboardHTTPTests(unittest.TestCase):
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
         env = {k: v for k, v in os.environ.items() if not k.startswith(("APNS_", "NTFY_"))}
-        process = subprocess.Popen([sys.executable, str(Path(server.__file__)), "serve", "--db", self.db_path, "--port", str(port)],
+        process = subprocess.Popen([sys.executable, "-u", str(Path(server.__file__)), "serve", "--db", self.db_path, "--port", str(port)],
                                    stdout=self.log, stderr=self.log, env=env)
         self.processes.append(process)
-        for _ in range(100):
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=0.1):
                     return port
             except OSError:
                 if process.poll() is not None:
-                    self.fail("Test server did not start")
+                    self.log.seek(0)
+                    self.fail("Test server did not start: " + self.log.read())
                 time.sleep(0.02)
-        self.fail("Test server timed out")
+        self.log.seek(0)
+        self.fail("Test server timed out: " + self.log.read())
 
-    def tearDown(self):
+    def cleanup_resources(self):
         for process in self.processes:
             process.terminate()
             process.wait(timeout=5)
@@ -174,6 +178,97 @@ class WhiteboardHTTPTests(unittest.TestCase):
         self.assertEqual(self.edit("bad", removed=[{}])[0], 400)
         self.assertEqual(self.edit("bad", [stroke("dup"), stroke("dup")])[0], 400)
         self.assertEqual(self.request("POST", "/v1/board/ops", {"id": "none", "add": [], "remove": []}, headers={"Authorization": "Bearer invalid"})[0], 401)
+
+    def photo(self, content="photo"):
+        return {"data": base64.b64encode(b"\xff\xd8" + content.encode()).decode(),
+                "zoom": 1, "offsetX": 0, "offsetY": 0, "rotation": 0}
+
+    def apply_art(self, source, revision, photo=None, role="A", stickers=None):
+        return self.request("POST", "/v1/apply",
+                            {"source": source, "expectedRevision": revision,
+                             "backgroundHex": "#000000", "backgroundPhoto": photo,
+                             "drawingData": stroke("snapshot")["drawingData"], "drawingHeight": 844,
+                             "stickers": stickers or []}, role=role)
+
+    def test_media_is_deduplicated_kept_for_offline_partner_and_old_files_pruned(self):
+        photo = self.photo()
+        self.assertEqual(self.apply_art("a", 0, photo)[0], 200)
+        self.assertEqual(self.apply_art("b", 0, photo, role="B")[0], 200)
+        media = server.MediaFiles(self.db_path)
+        self.assertEqual(len(list(media.root.glob("*.image"))), 1)
+        with server.connect(self.db_path) as db:
+            bodies = [json.loads(row[0]) for row in db.execute("SELECT body FROM snapshots")]
+        self.assertTrue(all("data" not in body["backgroundPhoto"] for body in bodies))
+        # The partner may fetch later, after the publishing phone is gone.
+        state = self.request("GET", "/v1/state", role="B")[1]
+        self.assertTrue(all(item["backgroundPhoto"] == photo for item in state["items"]))
+        self.assertEqual(self.request("GET", "/v1/state", role="other")[1]["items"], [])
+        self.assertEqual(self.apply_art("a", 1, self.photo("new"))[0], 200)
+        self.assertEqual(len(list(media.root.glob("*.image"))), 2)  # B still uses the original.
+        self.assertEqual(self.apply_art("b", 1, role="B")[0], 200)
+        self.assertEqual(len(list(media.root.glob("*.image"))), 1)
+        self.assertEqual(self.apply_art("a", 1, self.photo("conflict"))[0], 409)
+        self.assertEqual(len(list(media.root.glob("*.image"))), 1)
+        self.assertEqual(self.apply_art("a", 2)[0], 200)
+        self.assertEqual(list(media.root.glob("*.image")), [])
+
+    def test_inline_media_migrates_on_restart_without_changing_wire_snapshot(self):
+        self.processes[0].terminate(); self.processes[0].wait(timeout=5)
+        body = {"source": "a", "revision": 1, "author": "A", "backgroundHex": "#000000",
+                "backgroundPhoto": self.photo("legacy"), "drawingData": "", "drawingHeight": 844}
+        with server.connect(self.db_path) as db:
+            db.execute("INSERT INTO snapshots VALUES (?, ?, ?, ?)", ("pair", "a", 1, json.dumps(body)))
+        self.port = self.start_server()
+        self.assertEqual(self.request("GET", "/v1/state", role="B")[1]["items"], [body])
+        with server.connect(self.db_path) as db:
+            stored = json.loads(db.execute("SELECT body FROM snapshots").fetchone()[0])
+        self.assertIn("mediaID", stored["backgroundPhoto"])
+        self.assertNotIn("data", stored["backgroundPhoto"])
+        self.processes[-1].terminate(); self.processes[-1].wait(timeout=5)
+        self.port = self.start_server()
+        self.assertEqual(self.request("GET", "/v1/state", role="B")[1]["items"], [body])
+
+    def test_stickers_round_trip_and_invalid_media_cannot_replace_saved_art(self):
+        sticker = {"id": "11111111-1111-1111-1111-111111111111",
+                   "data": base64.b64encode(b"\x89PNG\r\n\x1a\nopaque-test").decode(),
+                   "centerX": 0.3, "centerY": 0.7, "width": 0.15, "rotation": -32}
+        status, saved, _ = self.apply_art("a", 0, stickers=[sticker])
+        self.assertEqual(status, 200)
+        self.assertEqual(self.request("GET", "/v1/state", role="B")[1]["items"], [saved])
+        with server.connect(self.db_path) as db:
+            stored = json.loads(db.execute("SELECT body FROM snapshots").fetchone()[0])
+        self.assertNotIn("data", stored["stickers"][0])
+        for invalid in [dict(sticker, width=-1), dict(sticker, rotation=float("nan")),
+                        dict(sticker, id="-" * 36),
+                        dict(sticker, data=base64.b64encode(b"not-an-image").decode())]:
+            self.assertEqual(self.apply_art("a", 1, stickers=[invalid])[0], 400)
+        self.assertEqual(self.request("GET", "/v1/state", role="B")[1]["items"], [saved])
+
+    def test_missing_photo_reports_an_error_but_unchanged_snapshots_need_no_media_read(self):
+        self.apply_art("a", 0, self.photo())
+        for file in server.MediaFiles(self.db_path).root.glob("*.image"):
+            file.unlink()
+        self.assertEqual(self.request("GET", "/v1/state", role="B")[0], 503)
+        status, state, _ = self.request("GET", "/v1/state", role="B",
+                                        headers={"X-CoupleDraw-Snapshots": "a:1"})
+        self.assertEqual((status, state["items"]), (200, []))
+
+    def test_compact_reclaims_orphans_and_preserves_custom_media_directory(self):
+        self.processes[0].terminate(); self.processes[0].wait(timeout=5)
+        directory = str(Path(self.temp.name) / "private-media")
+        media = server.MediaFiles(self.db_path, directory)
+        body = {"source": "a", "revision": 1, "author": "A", "backgroundHex": "#000000",
+                "backgroundPhoto": self.photo("retained"), "drawingData": "", "drawingHeight": 844}
+        stored = media.store(body)
+        orphan = media.store({"backgroundPhoto": self.photo("orphan")})["backgroundPhoto"]["mediaID"]
+        with server.connect(self.db_path) as db:
+            db.execute("INSERT INTO snapshots VALUES (?, ?, ?, ?)", ("pair", "a", 1, json.dumps(stored)))
+        result = subprocess.run([sys.executable, str(Path(server.__file__)), "compact", "--db", self.db_path,
+                                 "--media-dir", directory], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(media.path(orphan).exists())
+        with server.connect(self.db_path) as db:
+            self.assertEqual(media.restore(json.loads(db.execute("SELECT body FROM snapshots").fetchone()[0])), body)
 
 
 if __name__ == "__main__":

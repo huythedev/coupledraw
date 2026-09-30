@@ -1,4 +1,6 @@
 import Foundation
+import CryptoKit
+import Darwin
 import UIKit
 
 /// The destination is always explicit; UI labels never serve as persistent IDs.
@@ -60,6 +62,7 @@ struct CanvasRecord: Codable, Equatable {
     let ownerID: UUID
     var backgroundHex: String
     var backgroundPhoto: BackgroundPhoto?
+    var stickers: [CanvasSticker] = []
     /// PKDrawing's editable vector data. It is not a wallpaper screenshot.
     var drawingData: Data
     var modifiedAt: Date
@@ -81,7 +84,7 @@ struct CanvasRecord: Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case canvasID, ownerID, backgroundHex, backgroundPhoto, drawingData, modifiedAt, targetSize, drawingHeight
+        case canvasID, ownerID, backgroundHex, backgroundPhoto, stickers, drawingData, modifiedAt, targetSize, drawingHeight
     }
 
     init(from decoder: Decoder) throws {
@@ -90,6 +93,7 @@ struct CanvasRecord: Codable, Equatable {
         ownerID = try box.decode(UUID.self, forKey: .ownerID)
         backgroundHex = try box.decode(String.self, forKey: .backgroundHex)
         backgroundPhoto = try box.decodeIfPresent(BackgroundPhoto.self, forKey: .backgroundPhoto)
+        stickers = try box.decodeIfPresent([CanvasSticker].self, forKey: .stickers) ?? []
         drawingData = try box.decode(Data.self, forKey: .drawingData)
         modifiedAt = try box.decode(Date.self, forKey: .modifiedAt)
         // Earlier builds used fixed 390 × 844 coordinates. CanvasStore transforms
@@ -118,16 +122,122 @@ struct BackgroundPhoto: Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case data, zoom, offsetX, offsetY, rotation
+        case data, file, zoom, offsetX, offsetY, rotation
     }
 
     init(from decoder: Decoder) throws {
         let box = try decoder.container(keyedBy: CodingKeys.self)
-        data = try box.decode(Data.self, forKey: .data)
+        if let root = decoder.userInfo[.coupleDrawMediaRoot] as? URL,
+           let file = try box.decodeIfPresent(String.self, forKey: .file) {
+            data = try LocalMediaFiles.read(file, root: root)
+        } else {
+            data = try box.decode(Data.self, forKey: .data)
+        }
         zoom = try box.decodeIfPresent(Double.self, forKey: .zoom) ?? 1
         offsetX = try box.decodeIfPresent(Double.self, forKey: .offsetX) ?? 0
         offsetY = try box.decodeIfPresent(Double.self, forKey: .offsetY) ?? 0
         rotation = try box.decodeIfPresent(Double.self, forKey: .rotation) ?? 0
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var box = encoder.container(keyedBy: CodingKeys.self)
+        if let root = encoder.userInfo[.coupleDrawMediaRoot] as? URL {
+            try box.encode(LocalMediaFiles.store(data, root: root), forKey: .file)
+        } else {
+            try box.encode(data, forKey: .data)
+        }
+        try box.encode(zoom, forKey: .zoom)
+        try box.encode(offsetX, forKey: .offsetX)
+        try box.encode(offsetY, forKey: .offsetY)
+        try box.encode(rotation, forKey: .rotation)
+    }
+}
+
+/// Position and width are fractions of the portrait canvas, independent of pixels.
+struct CanvasSticker: Codable, Identifiable, Equatable {
+    let id: UUID
+    var data: Data
+    var centerX: Double
+    var centerY: Double
+    var width: Double
+    var rotation: Double
+
+    init(id: UUID = UUID(), data: Data, centerX: Double = 0.5,
+         centerY: Double = 0.5, width: Double = 0.4, rotation: Double = 0) {
+        self.id = id; self.data = data; self.centerX = centerX
+        self.centerY = centerY; self.width = width; self.rotation = rotation
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, data, file, centerX, centerY, width, rotation }
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        id = try box.decode(UUID.self, forKey: .id)
+        if let root = decoder.userInfo[.coupleDrawMediaRoot] as? URL,
+           let file = try box.decodeIfPresent(String.self, forKey: .file) {
+            data = try LocalMediaFiles.read(file, root: root)
+        } else { data = try box.decode(Data.self, forKey: .data) }
+        centerX = try box.decode(Double.self, forKey: .centerX)
+        centerY = try box.decode(Double.self, forKey: .centerY)
+        width = try box.decode(Double.self, forKey: .width)
+        rotation = try box.decode(Double.self, forKey: .rotation)
+    }
+    func encode(to encoder: Encoder) throws {
+        var box = encoder.container(keyedBy: CodingKeys.self)
+        try box.encode(id, forKey: .id)
+        if let root = encoder.userInfo[.coupleDrawMediaRoot] as? URL {
+            try box.encode(LocalMediaFiles.store(data, root: root), forKey: .file)
+        } else { try box.encode(data, forKey: .data) }
+        try box.encode(centerX, forKey: .centerX); try box.encode(centerY, forKey: .centerY)
+        try box.encode(width, forKey: .width); try box.encode(rotation, forKey: .rotation)
+    }
+}
+
+extension CodingUserInfoKey {
+    static let coupleDrawMediaRoot = CodingUserInfoKey(rawValue: "CoupleDraw.mediaRoot")!
+}
+
+enum LocalMediaFiles {
+    static func needsMigration(_ data: Data) throws -> Bool {
+        func inlineMedia(_ value: Any) -> Bool {
+            if let array = value as? [Any] { return array.contains(where: inlineMedia) }
+            guard let dict = value as? [String: Any] else { return false }
+            if let photo = dict["backgroundPhoto"] as? [String: Any], photo["data"] != nil { return true }
+            if let stickers = dict["stickers"] as? [[String: Any]], stickers.contains(where: { $0["data"] != nil }) { return true }
+            if let document = dict["document"] { return inlineMedia(document) }
+            return false
+        }
+        return inlineMedia(try JSONSerialization.jsonObject(with: data))
+    }
+    static func identifier(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+    static func folder(_ root: URL) -> URL { root.appendingPathComponent("media", isDirectory: true) }
+    static func path(_ ident: String, root: URL) throws -> URL {
+        guard ident.count == 64, ident.allSatisfy({ "0123456789abcdef".contains($0) }) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return folder(root).appendingPathComponent(ident)
+    }
+    static func store(_ data: Data, root: URL) throws -> String {
+        try FileManager.default.createDirectory(at: folder(root), withIntermediateDirectories: true)
+        let ident = identifier(data)
+        let url = try path(ident, root: root)
+        if (try? Data(contentsOf: url)) != data { try data.write(to: url, options: .atomic) }
+        return ident
+    }
+    static func read(_ ident: String, root: URL) throws -> Data {
+        let data = try Data(contentsOf: path(ident, root: root))
+        guard identifier(data) == ident else { throw CocoaError(.fileReadCorruptFile) }
+        return data
+    }
+    /// Serializes manifest changes and media cleanup across app/Shortcut processes.
+    static func withLock<T>(root: URL, _ action: () throws -> T) throws -> T {
+        let fd = open(root.appendingPathComponent(".storage.lock").path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { close(fd) }
+        guard flock(fd, LOCK_EX) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { flock(fd, LOCK_UN) }
+        return try action()
     }
 }
 

@@ -14,6 +14,22 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Test server
+        run: python3 -m unittest discover -s server -v -f
+
+      - name: Test iOS models
+        shell: bash
+        run: |
+          simulator_id=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; print(next(d["udid"] for group in devices.values() for d in group if d["name"].startswith("iPhone")))')
+          xcodebuild test -project CoupleDraw.xcodeproj -scheme CoupleDraw \
+            -destination "platform=iOS Simulator,id=$simulator_id" \
+            -derivedDataPath build/test-derived-data CODE_SIGNING_ALLOWED=NO
+
       - name: Build unsigned IPA
         run: sh tools/build-unsigned-ipa-on-mac.sh
 

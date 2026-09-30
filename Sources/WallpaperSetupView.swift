@@ -1,11 +1,22 @@
 import SwiftUI
 
 struct WallpaperSetupView: View {
+    @EnvironmentObject private var store: CanvasStore
     @Environment(\.dismiss) private var dismiss
+    @State private var showClearCache = false
+    @State private var cacheSize: Int64 = 0
+    @State private var cacheMessage = ""
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("Local storage") {
+                    LabeledContent("Wallpaper cache", value: ByteCountFormatter.string(fromByteCount: cacheSize, countStyle: .file))
+                    Button("Clear cache") { showClearCache = true }
+                    Text("Removes rendered wallpapers and unused image files. Drawings, photos and stickers in use, History, and pairing are kept. Wallpapers are regenerated when needed.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    if !cacheMessage.isEmpty { Text(cacheMessage).font(.footnote) }
+                }
                 Section("1 · Draw and apply") {
                     Label("Choose My art or Our art on the main screen, tap Draw, then tap Apply after editing.",
                           systemImage: "pencil.tip")
@@ -36,6 +47,16 @@ struct WallpaperSetupView: View {
             }
             .navigationTitle("Wallpaper setup")
             .toolbar { Button("Done") { dismiss() } }
+            .onAppear { cacheSize = store.cacheBytes }
+            .confirmationDialog("Clear cached wallpaper images?", isPresented: $showClearCache) {
+                Button("Clear cache", role: .destructive) {
+                    do {
+                        let freed = try store.clearCache()
+                        cacheMessage = "Cleared " + ByteCountFormatter.string(fromByteCount: freed, countStyle: .file)
+                    } catch { cacheMessage = "Could not clear cache: " + error.localizedDescription }
+                    cacheSize = store.cacheBytes
+                }
+            }
         }
     }
 }

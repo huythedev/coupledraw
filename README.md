@@ -15,6 +15,8 @@ You need an iPhone with iOS 17 or later. To build from source, use a Mac with th
 
 See [using the app](docs/using-the-app.md) for drawing, shared editing, History, photos, and the Lock Screen widget; [wallpaper and automations](docs/wallpaper-and-automations.md) covers ntfy and what happens while the phone is locked.
 
+In the drawing editor, **Stickers** lets you paste or import an image, use supported keyboard stickers, then drag, rotate, and resize each sticker. **Setup → Clear cache** frees rendered wallpaper images while keeping editable art and History.
+
 ## Pairing server
 
 The included `server/coupledraw_server.py` needs Python 3 and SQLite (Python's standard library). It stores drawings and issues separate private tokens for A and B. Create a pair **once**, keep its database, and give each person only their own token.

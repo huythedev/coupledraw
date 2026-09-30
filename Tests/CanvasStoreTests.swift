@@ -305,4 +305,78 @@ import UIKit
             XCTAssertFalse(PairSync.allowsServerURL(URL(string: address)!), address)
         }
     }
+
+    func testInlinePhotoMigrationDeduplicatesFilesAndKeepsNetworkEncoding() throws {
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = BackgroundPhoto(data: Data([1, 2, 3]), rotation: 15)
+        var old = store.record(.first)
+        old.backgroundPhoto = photo
+        try JSONEncoder().encode(old).write(to: root.appendingPathComponent("first.json"))
+        let revision = AppliedRevision(id: UUID(), canvasID: old.canvasID, authorID: store.pair.myUserID,
+                                       createdAt: Date(), document: old, imageFilename: "unused.png")
+        try JSONEncoder().encode([revision]).write(to: root.appendingPathComponent("revisions.json"))
+        let reloaded = CanvasStore(root: root)
+        XCTAssertEqual(reloaded.record(.first).backgroundPhoto, photo)
+        XCTAssertEqual(reloaded.revisions.first?.document.backgroundPhoto, photo)
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("first.json"))) as? [String: Any])
+        let storedPhoto = try XCTUnwrap(manifest["backgroundPhoto"] as? [String: Any])
+        XCTAssertNil(storedPhoto["data"])
+        XCTAssertNotNil(storedPhoto["file"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: LocalMediaFiles.folder(root).path).count, 1)
+        XCTAssertEqual(try JSONDecoder().decode(BackgroundPhoto.self, from: JSONEncoder().encode(photo)), photo)
+    }
+
+    func testClearCacheKeepsDraftsHistoryAndRegeneratesWallpaperOffline() throws {
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 20, height: 20)).image { context in
+            UIColor.red.setFill(); context.cgContext.fill(CGRect(x: 0, y: 0, width: 20, height: 20))
+        }
+        let photo = BackgroundPhoto(data: try XCTUnwrap(image.jpegData(compressionQuality: 0.8)))
+        store.updateBackgroundPhoto(photo, on: .first)
+        let originalURL = try XCTUnwrap(store.apply(.first))
+        let originalPNG = try Data(contentsOf: originalURL)
+        let revision = try XCTUnwrap(store.revisions.first)
+        store.updateBackground("#123456", on: .first)
+        let orphan = try LocalMediaFiles.store(Data([7, 8, 9]), root: root)
+        XCTAssertGreaterThan(try store.clearCache(), 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: originalURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try LocalMediaFiles.path(orphan, root: root).path))
+        XCTAssertEqual(store.revisions.count, 1)
+        XCTAssertEqual(store.record(.first).backgroundHex, "#123456")
+        XCTAssertEqual(try LocalMediaFiles.read(LocalMediaFiles.identifier(photo.data), root: root), photo.data)
+        let reloaded = CanvasStore(root: root)
+        XCTAssertEqual(reloaded.revisions.first?.document.backgroundPhoto, photo)
+        XCTAssertEqual(try Data(contentsOf: reloaded.cachedWallpaperURL(for: revision)), originalPNG)
+    }
+
+    func testStickersKeepTransparencyPlacementAndSurviveReloadAndRemoteApply() throws {
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let format = UIGraphicsImageRendererFormat(); format.opaque = false
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 50), format: format).image { context in
+            UIColor.green.setFill(); context.cgContext.fill(CGRect(x: 25, y: 10, width: 50, height: 30))
+        }
+        let data = try StickerImages.prepare(image)
+        let sticker = CanvasSticker(data: data, centerX: 0.25, centerY: 0.6, width: 0.3, rotation: 45)
+        store.updateStickers([sticker], on: .first)
+        XCTAssertNotNil(store.apply(.first))
+        XCTAssertEqual(CanvasStore(root: root).record(.first).stickers, [sticker])
+        var blank = store.record(.first)
+        blank.stickers = []
+        XCTAssertNotEqual(try WallpaperRenderer.render(blank).pngData(),
+                          try WallpaperRenderer.render(store.record(.first)).pngData())
+        var remote = SyncedRevision(source: "a", revision: 1, author: "A", backgroundHex: "#000000",
+                                    backgroundPhoto: nil, drawingData: Data(), drawingHeight: 844)
+        remote.stickers = [sticker]
+        try store.acceptRemote(remote, on: .second, localRole: "B")
+        XCTAssertEqual(store.record(.second).stickers, [sticker])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: LocalMediaFiles.folder(root).path).count, 1)
+        XCTAssertEqual(try JSONDecoder().decode(CanvasSticker.self, from: JSONEncoder().encode(sticker)), sticker)
+        let a = StickerImages.rect(sticker, imageSize: image.size, canvas: CGSize(width: 390, height: 844))
+        let b = StickerImages.rect(sticker, imageSize: image.size, canvas: CGSize(width: 780, height: 1688))
+        XCTAssertEqual(b.midX, a.midX * 2, accuracy: 0.001)
+        XCTAssertEqual(b.width, a.width * 2, accuracy: 0.001)
+    }
 }

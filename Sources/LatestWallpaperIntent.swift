@@ -28,7 +28,7 @@ struct LatestWallpaperIntent: AppIntent {
                 guard let data = image.pngData() else { throw WallpaperIntentError.imageEncoding }
                 return data
             }
-            return try Data(contentsOf: store.imageURL(for: latest))
+            return try Data(contentsOf: store.cachedWallpaperURL(for: latest))
         }
         return .result(value: IntentFile(data: imageData,
                                          filename: "CoupleDraw-Wallpaper.png", type: .png))

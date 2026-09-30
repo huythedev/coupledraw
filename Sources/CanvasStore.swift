@@ -17,8 +17,7 @@ import UIKit
     @Published var errorMessage: String?
 
     private let root: URL
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
+    private let encoder: JSONEncoder
     private var combinedCache: (base: Data, partner: Data, own: Data, merged: Data)?
     private var readOnlyCache: (base: Data, partner: Data, merged: Data)?
 
@@ -27,6 +26,11 @@ import UIKit
             .appendingPathComponent("CoupleDraw", isDirectory: true)
         self.root = rootURL
         try? FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        let localEncoder = JSONEncoder()
+        let localDecoder = JSONDecoder()
+        localEncoder.userInfo[.coupleDrawMediaRoot] = rootURL
+        localDecoder.userInfo[.coupleDrawMediaRoot] = rootURL
+        self.encoder = localEncoder
 
         let pairURL = rootURL.appendingPathComponent("pair.json")
         let localPair: LocalPair
@@ -42,10 +46,14 @@ import UIKit
         self.pair = resolvedPair
 
         var loaded: [CanvasSlot: CanvasRecord] = [:]
+        var readableSlots = Set<CanvasSlot>()
         for slot in CanvasSlot.allCases {
             let url = rootURL.appendingPathComponent("\(slot.rawValue).json")
-            if let data = try? Data(contentsOf: url), let record = try? JSONDecoder().decode(CanvasRecord.self, from: data) {
+            if let record = try? LocalMediaFiles.withLock(root: rootURL, {
+                try localDecoder.decode(CanvasRecord.self, from: Data(contentsOf: url))
+            }) {
                 loaded[slot] = record
+                readableSlots.insert(slot)
             } else {
                 let ownerID = slot == .second ? localPair.partnerUserID : localPair.myUserID
                 let canvasID: UUID
@@ -61,8 +69,10 @@ import UIKit
         self.sharedOwnData = (try? Data(contentsOf: rootURL.appendingPathComponent("shared-own.data"))) ?? Data()
         self.sharedPartnerData = (try? Data(contentsOf: rootURL.appendingPathComponent("shared-partner.data"))) ?? Data()
         let revisionsURL = rootURL.appendingPathComponent("revisions.json")
-        if let data = try? Data(contentsOf: revisionsURL),
-           let saved = try? JSONDecoder().decode([AppliedRevision].self, from: data) {
+        let savedRevisions = try? LocalMediaFiles.withLock(root: rootURL, {
+            try localDecoder.decode([AppliedRevision].self, from: Data(contentsOf: revisionsURL))
+        })
+        if let saved = savedRevisions {
             self.revisions = saved
         } else {
             self.revisions = []
@@ -77,6 +87,30 @@ import UIKit
             }
         }
         refreshMineTarget()
+        // Upgrade inline photos without deleting the old manifest until its
+        // replacement and every referenced file have been written atomically.
+        do {
+            for slot in readableSlots {
+                try migrateMedia(CanvasRecord.self, at: rootURL.appendingPathComponent("\(slot.rawValue).json"), decoder: localDecoder)
+            }
+            if savedRevisions != nil { try migrateMedia([AppliedRevision].self, at: revisionsURL, decoder: localDecoder) }
+            try FileManager.default.createDirectory(at: wallpaperCache, withIntermediateDirectories: true)
+            var cacheURL = wallpaperCache
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try cacheURL.setResourceValues(values)
+            try LocalMediaFiles.withLock(root: rootURL) {
+                for revision in revisions {
+                    let old = rootURL.appendingPathComponent(revision.imageFilename)
+                    let new = imageURL(for: revision)
+                    if FileManager.default.fileExists(atPath: old.path) {
+                        if FileManager.default.fileExists(atPath: new.path) {
+                            try FileManager.default.removeItem(at: old)
+                        } else { try FileManager.default.moveItem(at: old, to: new) }
+                    }
+                }
+            }
+        } catch { errorMessage = "Could not migrate local media: \(error.localizedDescription)" }
     }
 
     func record(_ slot: CanvasSlot) -> CanvasRecord { records[slot]! }
@@ -232,6 +266,17 @@ import UIKit
         save(record, on: slot)
     }
 
+    func updateStickers(_ stickers: [CanvasSticker], on slot: CanvasSlot) {
+        guard slot != .second, var record = records[slot] else { return }
+        guard stickers.count <= 12, stickers.reduce(0, { $0 + $1.data.count }) <= 1_500_000 else {
+            errorMessage = "This canvas is full of stickers. Remove a sticker before adding another."
+            return
+        }
+        record.stickers = stickers
+        record.modifiedAt = Date()
+        save(record, on: slot)
+    }
+
     func refreshMineTarget() {
         let actual = WallpaperSize.thisIPhone
         if record(.first).targetSize != actual {
@@ -292,8 +337,9 @@ import UIKit
         let record = displayedRecord(slot)
         let revisionID = UUID()
         let filename = "\(revisionID.uuidString).png"
-        let url = root.appendingPathComponent(filename)
+        let url = wallpaperCache.appendingPathComponent(filename)
         do {
+            try FileManager.default.createDirectory(at: wallpaperCache, withIntermediateDirectories: true)
             let image = try WallpaperRenderer.render(record)
             guard let png = image.pngData() else { throw StoreError.imageEncoding }
             try png.write(to: url, options: .atomic)
@@ -312,7 +358,67 @@ import UIKit
     }
 
     func imageURL(for revision: AppliedRevision) -> URL {
-        root.appendingPathComponent(revision.imageFilename)
+        wallpaperCache.appendingPathComponent("\(revision.id.uuidString).png")
+    }
+
+    private var wallpaperCache: URL { root.appendingPathComponent("wallpaper-cache", isDirectory: true) }
+
+    func cachedWallpaperURL(for revision: AppliedRevision) throws -> URL {
+        try LocalMediaFiles.withLock(root: root) {
+            let url = imageURL(for: revision)
+            if !FileManager.default.fileExists(atPath: url.path) {
+                let image = try WallpaperRenderer.render(revision.document)
+                guard let png = image.pngData() else { throw StoreError.imageEncoding }
+                try FileManager.default.createDirectory(at: wallpaperCache, withIntermediateDirectories: true)
+                try png.write(to: url, options: .atomic)
+            }
+            return url
+        }
+    }
+
+    private func removableCacheFiles() throws -> [URL] {
+        let fm = FileManager.default
+        // Read every persisted reference, including canvases changed by a
+        // Shortcut since this in-memory store was opened. Abort on corrupt JSON.
+        var used = Set<String>()
+        func collect(_ value: Any) {
+            if let dict = value as? [String: Any] {
+                if let file = dict["file"] as? String { used.insert(file) }
+                dict.values.forEach(collect)
+            } else if let array = value as? [Any] { array.forEach(collect) }
+        }
+        let manifests = CanvasSlot.allCases.map { root.appendingPathComponent("\($0.rawValue).json") }
+            + [root.appendingPathComponent("revisions.json")]
+        for url in manifests where fm.fileExists(atPath: url.path) {
+            collect(try JSONSerialization.jsonObject(with: Data(contentsOf: url)))
+        }
+        let cached = (try? fm.contentsOfDirectory(at: wallpaperCache, includingPropertiesForKeys: nil)) ?? []
+        let legacy = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "png" && UUID(uuidString: $0.deletingPathExtension().lastPathComponent) != nil }
+        let media = (try? fm.contentsOfDirectory(at: LocalMediaFiles.folder(root), includingPropertiesForKeys: nil)) ?? []
+        return cached.filter { $0.pathExtension == "png" } + legacy
+            + media.filter { !used.contains($0.lastPathComponent) }
+    }
+
+    var cacheBytes: Int64 {
+        (try? LocalMediaFiles.withLock(root: root) {
+            try removableCacheFiles().reduce(Int64(0)) { total, url in
+                total + Int64((try url.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0)
+            }
+        }) ?? 0
+    }
+
+    @discardableResult func clearCache() throws -> Int64 {
+        try LocalMediaFiles.withLock(root: root) {
+            var removed: Int64 = 0
+            for url in try removableCacheFiles() {
+                let bytes = Int64((try url.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0)
+                try FileManager.default.removeItem(at: url)
+                removed += bytes
+            }
+            BackgroundPhotoLayout.clearImageCache()
+            return removed
+        }
     }
 
     func deleteAllRevisions(on slot: CanvasSlot) {
@@ -336,6 +442,7 @@ import UIKit
         var incoming = record(slot)
         incoming.backgroundHex = remote.backgroundHex
         incoming.backgroundPhoto = remote.backgroundPhoto
+        incoming.stickers = remote.stickers ?? []
         incoming.drawingData = remote.drawingData
         incoming.drawingHeight = remote.drawingHeight
         incoming = try rescaled(incoming, to: incoming.targetSize)
@@ -344,7 +451,8 @@ import UIKit
         guard let png = image.pngData() else { throw StoreError.imageEncoding }
         let revisionID = UUID()
         let filename = "\(revisionID.uuidString).png"
-        let url = root.appendingPathComponent(filename)
+        let url = wallpaperCache.appendingPathComponent(filename)
+        try FileManager.default.createDirectory(at: wallpaperCache, withIntermediateDirectories: true)
         try png.write(to: url, options: .atomic)
         let revision = AppliedRevision(id: revisionID, canvasID: incoming.canvasID,
                                        authorID: remote.author == localRole ? pair.myUserID : pair.partnerUserID,
@@ -356,6 +464,7 @@ import UIKit
                 if !keepSharedBackground {
                     base.backgroundHex = incoming.backgroundHex
                     base.backgroundPhoto = incoming.backgroundPhoto
+                    base.stickers = incoming.stickers
                 }
                 save(base, on: slot)
             } else {
@@ -382,7 +491,18 @@ import UIKit
     }
 
     private func persist<T: Encodable>(_ value: T, to url: URL) throws {
-        try encoder.encode(value).write(to: url, options: .atomic)
+        try LocalMediaFiles.withLock(root: root) {
+            try encoder.encode(value).write(to: url, options: .atomic)
+        }
+    }
+
+    private func migrateMedia<T: Codable>(_ type: T.Type, at url: URL, decoder: JSONDecoder) throws {
+        try LocalMediaFiles.withLock(root: root) {
+            let data = try Data(contentsOf: url)
+            guard try LocalMediaFiles.needsMigration(data) else { return }
+            let current = try decoder.decode(type, from: data)
+            try encoder.encode(current).write(to: url, options: .atomic)
+        }
     }
 
     enum StoreError: LocalizedError {

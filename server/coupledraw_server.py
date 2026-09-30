@@ -15,11 +15,13 @@ import os
 import re
 import secrets
 import sqlite3
+import tempfile
 import threading
 import time
 import warnings
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -31,8 +33,134 @@ lock = threading.RLock()
 state_changed = threading.Condition(lock)
 
 
+class SyncHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer performs reverse DNS here, which can stall local startup.
+        # This service does not use the resolved hostname.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
+class MediaFiles:
+    """Private, content-addressed images; SQLite keeps placement and references."""
+    def __init__(self, db_path, directory=None):
+        self.root = Path(directory or (str(db_path) + ".media")).resolve()
+        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    def path(self, ident):
+        if not isinstance(ident, str) or not re.fullmatch(r"[0-9a-f]{64}", ident):
+            raise ValueError("Invalid stored media reference")
+        return self.root / (ident + ".image")
+
+    def store_image(self, item):
+        if item is None or "data" not in item:
+            return item
+        image = base64.b64decode(item["data"], validate=True)
+        ident = hashlib.sha256(image).hexdigest()
+        target = self.path(ident)
+        if not target.exists() or target.read_bytes() != image:
+            # The file must be durable before a transaction can reference it.
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=self.root, delete=False) as output:
+                    temporary = Path(output.name)
+                    output.write(image)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, target)
+                directory_fd = os.open(self.root, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+        result = {key: value for key, value in item.items() if key != "data"}
+        result["mediaID"] = ident
+        return result
+
+    def store(self, body):
+        result = dict(body)
+        result["backgroundPhoto"] = self.store_image(body.get("backgroundPhoto"))
+        if "stickers" in body:
+            result["stickers"] = [self.store_image(item) for item in body["stickers"]]
+        return result
+
+    def restore_image(self, item):
+        if item is not None and "mediaID" in item:
+            image = self.path(item["mediaID"]).read_bytes()
+            if hashlib.sha256(image).hexdigest() != item["mediaID"]:
+                raise ValueError("Stored media is damaged")
+            result = {key: value for key, value in item.items() if key != "mediaID"}
+            result["data"] = base64.b64encode(image).decode()
+            return result
+        return item
+
+    def restore(self, body):
+        if body is None:
+            return None
+        result = dict(body)
+        result["backgroundPhoto"] = self.restore_image(body.get("backgroundPhoto"))
+        if "stickers" in body:
+            result["stickers"] = [self.restore_image(item) for item in body["stickers"]]
+        return result
+
+    def prune(self, db):
+        # Call inside BEGIN IMMEDIATE. Readers hydrate files within the same
+        # SQLite lock, so an in-flight response cannot lose its referenced JPEG.
+        referenced = set()
+        for (raw,) in db.execute("SELECT body FROM snapshots UNION ALL SELECT body FROM shared_base"):
+            body = json.loads(raw) or {}
+            for item in [body.get("backgroundPhoto"), *body.get("stickers", [])]:
+                if item and "mediaID" in item:
+                    self.path(item["mediaID"])  # Validate before deleting anything.
+                    referenced.add(item["mediaID"])
+        removed = 0
+        for file in self.root.glob("*.image"):
+            if re.fullmatch(r"[0-9a-f]{64}", file.stem) and file.stem not in referenced:
+                removed += file.stat().st_size
+                file.unlink()
+        return removed
+
+
+def prepare_media(db_path, media, compact=False):
+    """Migrate old inline images transactionally, then reclaim unused storage."""
+    migrated = 0
+    with connect(db_path) as db:
+        db.execute("BEGIN IMMEDIATE")
+        # Once the new board exists, the legacy seed is no longer needed.
+        db.execute("UPDATE shared_base SET body='null' WHERE pair_id IN (SELECT pair_id FROM whiteboards)")
+        for table, keys in (("snapshots", ("pair_id", "source")), ("shared_base", ("pair_id",))):
+            rows = db.execute(f"SELECT {', '.join(keys)}, body FROM {table}").fetchall()
+            for row in rows:
+                body = json.loads(row[-1])
+                if body and any(item and "data" in item for item in [body.get("backgroundPhoto"), *body.get("stickers", [])]):
+                    stored = media.store(body)
+                    where = " AND ".join(key + "=?" for key in keys)
+                    db.execute(f"UPDATE {table} SET body=? WHERE {where}",
+                               (json.dumps(stored, separators=(",", ":")), *row[:-1]))
+                    migrated += 1
+        db.commit()
+        db.execute("BEGIN IMMEDIATE")
+        removed = media.prune(db)
+        db.commit()
+        if compact or migrated:
+            db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            db.execute("VACUUM")
+    return migrated, removed
+
+
+class Database(sqlite3.Connection):
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
 def connect(path):
-    db = sqlite3.connect(path, timeout=10)
+    db = sqlite3.connect(path, timeout=10, factory=Database)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("CREATE TABLE IF NOT EXISTS members (token_hash TEXT PRIMARY KEY, pair_id TEXT NOT NULL, role TEXT NOT NULL)")
     db.execute("CREATE TABLE IF NOT EXISTS snapshots (pair_id TEXT NOT NULL, source TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(pair_id, source))")
@@ -241,7 +369,9 @@ def pair(db_path, custom_tokens=False):
             print(f"{role}: {token}")
 
 
-def serve(db_path, host, port):
+def serve(db_path, host, port, media_dir=None):
+    media = MediaFiles(db_path, media_dir)
+    migrated, removed = prepare_media(db_path, media)
     ntfy = ntfy_base_url(db_path)
     if push_configured():
         try:
@@ -294,9 +424,22 @@ def serve(db_path, host, port):
                          if part.startswith("wait=") and part[5:].isdigit() and
                          1 <= int(part[5:]) <= 25), 0)
             deadline = time.monotonic() + wait
+            def known_versions(header):
+                result = {}
+                for pair in self.headers.get(header, "").split(","):
+                    key, separator, value = pair.partition(":")
+                    if separator and value.isdigit() and len(key) <= 16:
+                        result[key] = int(value)
+                return result
+
+            known_snapshots = known_versions("X-CoupleDraw-Snapshots")
+            known_drafts = known_versions("X-CoupleDraw-Drafts")
+            topic = recipient_topic(db_path, member[0], member[1]) if ntfy else None
+            push = push_configured()
             with state_changed:
                 while True:
                     with connect(db_path) as db:
+                        db.execute("BEGIN IMMEDIATE")
                         # Freeze the pre-collaboration snapshot as the base. Later
                         # Applies are saved revisions, not new editable base strokes.
                         db.execute("INSERT OR IGNORE INTO shared_base (pair_id, body) SELECT ?, COALESCE((SELECT body FROM snapshots WHERE pair_id=? AND source='together'), 'null')",
@@ -308,15 +451,20 @@ def serve(db_path, host, port):
                                           (member[0],)).fetchall()
                         drafts = db.execute("SELECT role, revision, drawing_data, drawing_height FROM shared_drafts WHERE pair_id=? ORDER BY role",
                                             (member[0],)).fetchall()
-                    topic = recipient_topic(db_path, member[0], member[1]) if ntfy else None
-                    push = push_configured()
-                    marker = json.dumps([member[1], push, topic, ntfy,
+                        marker = json.dumps([member[1], push, topic, ntfy,
                                          [(source, revision) for source, revision, _ in rows],
                                          [(role, revision) for role, revision, _, _ in drafts],
                                          board["revision"] if board else None],
                                         separators=(",", ":")).encode()
-                    etag = '"' + hashlib.sha256(marker).hexdigest()[:24] + '"'
-                    remaining = deadline - time.monotonic()
+                        etag = '"' + hashlib.sha256(marker).hexdigest()[:24] + '"'
+                        remaining = deadline - time.monotonic()
+                        if self.headers.get("If-None-Match") != etag:
+                            try:
+                                changed_snapshots = [media.restore(json.loads(body)) for source, revision, body in rows
+                                                     if known_snapshots.get(source) != revision]
+                                hydrated_base = None if self.headers.get("X-CoupleDraw-Base-Known") == "1" else media.restore(json.loads(base_row[0]))
+                            except (OSError, ValueError):
+                                return self.reply(503, {"error": "A stored photo is unavailable. Restore the server media backup or re-apply the photo from a phone."})
                     if self.headers.get("If-None-Match") != etag or remaining <= 0:
                         break
                     # Recheck SQLite periodically in case another server process
@@ -331,18 +479,6 @@ def serve(db_path, host, port):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            def known_versions(header):
-                result = {}
-                for pair in self.headers.get(header, "").split(","):
-                    key, separator, value = pair.partition(":")
-                    if separator and value.isdigit() and len(key) <= 16:
-                        result[key] = int(value)
-                return result
-
-            known_snapshots = known_versions("X-CoupleDraw-Snapshots")
-            known_drafts = known_versions("X-CoupleDraw-Drafts")
-            changed_snapshots = [json.loads(body) for source, revision, body in rows
-                                 if known_snapshots.get(source) != revision]
             changed_drafts = [{"role": role, "revision": revision,
                                "drawingData": data, "drawingHeight": height}
                               for role, revision, data, height in drafts
@@ -352,10 +488,11 @@ def serve(db_path, host, port):
                                     "ntfyTopic": topic, "ntfyBaseURL": ntfy,
                                     "hasPartnerArt": any(source == partner_source for source, _, _ in rows),
                                     "items": changed_snapshots,
+                                    "mediaProtocol": 1,
                                     "boardProtocol": 1, "boardSeedTag": seed_tag,
                                     "board": board if board and board["revision"] != self.board_since() else None,
                                     "sharedBase": None if self.headers.get("X-CoupleDraw-Base-Known") == "1"
-                                    else json.loads(base_row[0]),
+                                    else hydrated_base,
                                     "draftRevisions": {role: revision for role, revision, _, _ in drafts},
                                     "drafts": changed_drafts},
                               {"ETag": etag, "X-CoupleDraw-Long-Poll": "1"})
@@ -416,10 +553,19 @@ def serve(db_path, host, port):
                 db.executemany("INSERT INTO board_strokes VALUES (?, ?, ?, ?, ?, NULL)",
                                [(member[0], stroke["id"], stroke["drawingData"], stroke["drawingHeight"], revision) for stroke in additions])
                 db.execute("INSERT OR REPLACE INTO whiteboards VALUES (?, ?)", (member[0], revision))
+                if seed:
+                    db.execute("UPDATE shared_base SET body='null' WHERE pair_id=?", (member[0],))
                 if not seed:
                     db.execute("INSERT INTO board_operations VALUES (?, ?, ?)", (member[0], operation, digest))
                 result = board_update(db, member[0], self.board_since())
                 db.commit()
+                if seed:
+                    db.execute("BEGIN IMMEDIATE")
+                    try:
+                        media.prune(db)
+                    except OSError:
+                        print("Media cleanup deferred until next server start.", flush=True)
+                    db.commit()
                 state_changed.notify_all()
             self.event_detail = f" board_revision={revision} added={len(additions)} removed={len(removals)}"
             return self.reply(200, result)
@@ -485,6 +631,29 @@ def serve(db_path, host, port):
                 height = obj["drawingHeight"]
                 color = obj["backgroundHex"]
                 photo = obj.get("backgroundPhoto")
+                stickers = obj.get("stickers", [])
+                if not isinstance(stickers, list) or len(stickers) > 12:
+                    raise ValueError("Too many stickers")
+                sticker_ids = set()
+                sticker_bytes = 0
+                for sticker in stickers:
+                    if not isinstance(sticker, dict) or set(sticker) != {"id", "data", "centerX", "centerY", "width", "rotation"}:
+                        raise ValueError("Invalid sticker")
+                    ident = sticker["id"]
+                    if not isinstance(ident, str) or not re.fullmatch(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}", ident) or ident.lower() in sticker_ids:
+                        raise ValueError("Invalid sticker ID")
+                    sticker_ids.add(ident.lower())
+                    image = base64.b64decode(sticker["data"], validate=True)
+                    sticker_bytes += len(image)
+                    if not 0 < len(image) <= 500_000 or not image.startswith(b"\x89PNG\r\n\x1a\n"):
+                        raise ValueError("Invalid sticker image")
+                    for key, minimum, maximum in (("centerX", -100, 100), ("centerY", -100, 100),
+                                                  ("width", 0.01, 10), ("rotation", -360, 360)):
+                        value = sticker[key]
+                        if type(value) not in (int, float) or not math.isfinite(value) or not minimum <= value <= maximum:
+                            raise ValueError("Invalid sticker placement")
+                if sticker_bytes > 1_500_000:
+                    raise ValueError("Stickers too large")
                 if source not in ("a", "b", "together") or len(data) > MAX_BOARD_BYTES:
                     raise ValueError("Invalid source or drawing")
                 if source in ("a", "b") and source.upper() != member[1]:
@@ -522,9 +691,21 @@ def serve(db_path, host, port):
                 body = {"source": source, "revision": current + 1,
                         "author": member[1], "backgroundHex": color,
                         "backgroundPhoto": photo,
+                        "stickers": stickers,
                         "drawingData": obj["drawingData"], "drawingHeight": height}
+                try:
+                    stored_body = media.store(body)
+                except OSError:
+                    return self.reply(507, {"error": "The server could not save the photo. Check available disk space."})
                 db.execute("INSERT OR REPLACE INTO snapshots VALUES (?, ?, ?, ?)",
-                           (member[0], source, current + 1, json.dumps(body, separators=(",", ":"))))
+                           (member[0], source, current + 1, json.dumps(stored_body, separators=(",", ":"))))
+                db.commit()
+                db.execute("BEGIN IMMEDIATE")
+                try:
+                    media.prune(db)
+                except OSError:
+                    print("Media cleanup deferred until next server start.", flush=True)
+                db.commit()
                 state_changed.notify_all()
             self.event_detail = f" source={source} revision={current + 1}"
             if push_configured() or ntfy:
@@ -550,8 +731,9 @@ def serve(db_path, host, port):
             # Suppress the default raw request line, which can include secrets in query strings.
             pass
 
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd = SyncHTTPServer((host, port), Handler)
     print(f"CoupleDraw sync listening on {host}:{port}; use HTTP only on trusted local Wi-Fi, HTTPS elsewhere")
+    print(f"Photos stored in {media.root}; migrated {migrated} inline photos, removed {removed} unused bytes")
     if not push_configured():
         print("Partner push alerts disabled: set APNS_KEY_FILE, APNS_KEY_ID, APNS_TEAM_ID and APNS_TOPIC")
     if ntfy:
@@ -566,10 +748,11 @@ def serve(db_path, host, port):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("create-pair", "configure-ntfy", "serve"))
+    parser.add_argument("command", choices=("create-pair", "configure-ntfy", "compact", "serve"))
     parser.add_argument("--db", default="coupledraw.sqlite3")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--media-dir", help="Private photo directory (default: <db path>.media)")
     parser.add_argument("--custom-tokens", action="store_true",
                         help="Prompt privately for distinct A and B tokens when creating a pair")
     args = parser.parse_args()
@@ -585,7 +768,12 @@ if __name__ == "__main__":
             configure_ntfy(args.db)
         except ValueError as error:
             parser.error(str(error))
+    elif args.command == "compact":
+        if args.custom_tokens:
+            parser.error("--custom-tokens only works with create-pair")
+        migrated, removed = prepare_media(args.db, MediaFiles(args.db, args.media_dir), compact=True)
+        print(f"Migrated {migrated} photos; removed {removed} unused media bytes; compacted SQLite.")
     else:
         if args.custom_tokens:
             parser.error("--custom-tokens only works with create-pair")
-        serve(args.db, args.host, args.port)
+        serve(args.db, args.host, args.port, args.media_dir)

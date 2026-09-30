@@ -13,6 +13,7 @@ struct SyncedRevision: Codable {
     let backgroundPhoto: BackgroundPhoto?
     let drawingData: Data
     let drawingHeight: Double
+    var stickers: [CanvasSticker]? = nil
 }
 
 private struct ServerState: Decodable {
@@ -26,6 +27,7 @@ private struct ServerState: Decodable {
     let draftRevisions: [String: Int]?
     let hasPartnerArt: Bool?
     let boardProtocol: Int?
+    let mediaProtocol: Int?
     let boardSeedTag: String?
     let board: BoardUpdate?
 }
@@ -58,6 +60,7 @@ private struct PublishBody: Encodable {
     let backgroundPhoto: BackgroundPhoto?
     let drawingData: Data
     let drawingHeight: Double
+    let stickers: [CanvasSticker]
 }
 
 private struct ServerError: Decodable { let error: String }
@@ -90,6 +93,7 @@ private struct ServerError: Decodable { let error: String }
     private var longPollAttempted = false
     private var longPollWaitSeconds = 20
     private var retryShortWait = false
+    private var supportsStickerSync = false
     private weak var activeBoard: SharedWhiteboard?
     private var sessionID = UUID()
     private var draftTask: Task<Void, Never>?
@@ -157,7 +161,7 @@ private struct ServerError: Decodable { let error: String }
                 for slot in CanvasSlot.allCases {
                     if slot == .second { dirty.remove(slot); continue }
                     let local = store.record(slot)
-                    if !local.drawingData.isEmpty || local.backgroundHex != "#000000" || local.backgroundPhoto != nil {
+                    if !local.drawingData.isEmpty || local.backgroundHex != "#000000" || local.backgroundPhoto != nil || !local.stickers.isEmpty {
                         dirty.insert(slot)
                     }
                 }
@@ -346,6 +350,10 @@ private struct ServerError: Decodable { let error: String }
                 return false
             }
             let record = store.displayedRecord(.together)
+            guard record.stickers.isEmpty || supportsStickerSync else {
+                store.errorMessage = "Update the Python server to this version before sharing stickers. Your draft is saved locally."
+                return false
+            }
             let capturedRevision = board.revision
             do {
                 var request = try authorizedRequest(path: "/v1/apply")
@@ -355,7 +363,8 @@ private struct ServerError: Decodable { let error: String }
                     source: "together", expectedRevision: versions[.together] ?? 0,
                     boardRevision: capturedRevision,
                     backgroundHex: record.backgroundHex, backgroundPhoto: record.backgroundPhoto,
-                    drawingData: record.drawingData, drawingHeight: record.drawingHeight))
+                    drawingData: record.drawingData, drawingHeight: record.drawingHeight,
+                    stickers: record.stickers))
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let http = response as? HTTPURLResponse else { throw SyncError.response }
                 if http.statusCode == 409 { continue }
@@ -435,6 +444,7 @@ private struct ServerError: Decodable { let error: String }
     }
 
     private func incorporate(_ state: ServerState, store: CanvasStore) async throws {
+        supportsStickerSync = state.mediaProtocol == 1
         if state.boardProtocol != 1 {
             throw SyncError.server("Update the Python server to this source version to enable the shared whiteboard.")
         }
@@ -509,6 +519,11 @@ private struct ServerError: Decodable { let error: String }
         guard configured else { return }
         if role == nil { await refresh(store: store) }
         guard let role else { return }
+        guard record.stickers.isEmpty || supportsStickerSync else {
+            status = "Saved on this phone. Update the Python server before sharing stickers."
+            store.errorMessage = status
+            return
+        }
         let source = source(for: slot, role: role)
         do {
             var request = try authorizedRequest(path: "/v1/apply")
@@ -518,7 +533,7 @@ private struct ServerError: Decodable { let error: String }
                 source: source, expectedRevision: versions[slot] ?? 0, boardRevision: nil,
                 backgroundHex: record.backgroundHex, backgroundPhoto: record.backgroundPhoto,
                 drawingData: record.drawingData,
-                drawingHeight: record.drawingHeight))
+                drawingHeight: record.drawingHeight, stickers: record.stickers))
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw SyncError.response }
             if http.statusCode == 409 {

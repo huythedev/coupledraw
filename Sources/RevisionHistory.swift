@@ -4,6 +4,7 @@ struct RevisionHistory: View {
     @EnvironmentObject private var store: CanvasStore
     @Environment(\.dismiss) private var dismiss
     @State private var showDeleteAllConfirmation = false
+    @State private var sharedImage: SharedWallpaper?
     let slot: CanvasSlot
 
     private var revisions: [AppliedRevision] {
@@ -15,8 +16,7 @@ struct RevisionHistory: View {
             List {
                 ForEach(revisions) { revision in
                     HStack {
-                        Image(uiImage: UIImage(contentsOfFile: store.imageURL(for: revision).path) ?? UIImage())
-                            .resizable().scaledToFit().frame(width: 54, height: 96)
+                        RevisionThumbnail(revision: revision)
                         VStack(alignment: .leading) {
                             if revision.recovery == true {
                                 Text("Recovered draft").font(.caption.bold())
@@ -25,8 +25,10 @@ struct RevisionHistory: View {
                             Text(revision.createdAt, style: .time).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        ShareLink(item: store.imageURL(for: revision),
-                                  preview: SharePreview("CoupleDraw Wallpaper")) {
+                        Button {
+                            do { sharedImage = SharedWallpaper(url: try store.cachedWallpaperURL(for: revision)) }
+                            catch { store.errorMessage = error.localizedDescription }
+                        } label: {
                             Image(systemName: "square.and.arrow.up")
                         }
                         .accessibilityLabel("Share wallpaper manually")
@@ -47,6 +49,7 @@ struct RevisionHistory: View {
                 }
             }
             .navigationTitle("Applied revisions")
+            .sheet(item: $sharedImage) { item in WallpaperShareSheet(url: item.url) }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Delete all", role: .destructive) { showDeleteAllConfirmation = true }
@@ -68,6 +71,33 @@ struct RevisionHistory: View {
             )) {
                 Button("OK") { store.errorMessage = nil }
             } message: { Text(store.errorMessage ?? "Unknown error") }
+        }
+    }
+}
+
+private struct SharedWallpaper: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+private struct WallpaperShareSheet: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+private struct RevisionThumbnail: View {
+    let revision: AppliedRevision
+    @State private var image: UIImage?
+    var body: some View {
+        Group {
+            if let image { Image(uiImage: image).resizable().scaledToFit() }
+            else { Color.gray.opacity(0.15) }
+        }
+        .frame(width: 54, height: 96)
+        .task(id: revision.id) {
+            let aspect = revision.document.drawingSize.height / revision.document.drawingSize.width
+            image = try? WallpaperRenderer.render(revision.document, pixels: CGSize(width: 108, height: 108 * aspect))
         }
     }
 }

@@ -3,6 +3,7 @@ import SwiftUI
 
 enum BackgroundPhotoLayout {
     private static let imageCache = NSCache<NSData, UIImage>()
+    static func clearImageCache() { imageCache.removeAllObjects() }
 
     static func image(_ data: Data) -> UIImage? {
         let key = data as NSData
