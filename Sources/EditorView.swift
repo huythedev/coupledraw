@@ -3,7 +3,6 @@ import SwiftUI
 struct EditorView: View {
     @EnvironmentObject private var store: CanvasStore
     @EnvironmentObject private var sync: PairSync
-    @EnvironmentObject private var backgroundExperiment: BackgroundLocationExperiment
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("wallpaperChoice") private var wallpaperChoice = WallpaperChoice.own.rawValue
     @State private var slot: CanvasSlot = .first
@@ -81,7 +80,8 @@ struct EditorView: View {
                 sync.start(store: store)
                 Task { await sync.resumePartnerAlerts() }
             }
-            if phase == .background && !backgroundExperiment.canTryBackground { sync.stop() }
+            if phase == .inactive { sync.stop() }
+            if phase == .background { sync.suspend() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .coupleDrawPushToken)) { _ in
             Task { await sync.sendDeviceRegistration() }

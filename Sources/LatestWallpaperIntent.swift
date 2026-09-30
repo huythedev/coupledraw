@@ -13,7 +13,7 @@ struct LatestWallpaperIntent: AppIntent {
     func perform() async throws -> some IntentResult & ReturnsValue<IntentFile> {
         let store = await MainActor.run { CanvasStore() }
         let sync = await MainActor.run { PairSync() }
-        await sync.refresh(store: store)
+        try await sync.refreshForShortcut(store: store)
         let imageData = try await MainActor.run { () throws -> Data in
             let choice = WallpaperChoice(rawValue: UserDefaults.standard.string(forKey: "wallpaperChoice") ?? "own") ?? .own
             if choice == .partner && !sync.hasPartnerArt {

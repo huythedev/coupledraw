@@ -26,7 +26,6 @@
 		9AFDB7C37851987C7C132275 /* WallpaperSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDEB7C3416986E013F256BCE /* WallpaperSetupView.swift */; };
 		B6537B19DC1E87E33A1C0817 /* CanvasModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6837C3A84276A744B1EC1EC /* CanvasModels.swift */; };
 		C28076E89F8919C007B58A18 /* BackgroundPhotoLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64D766ED4C38C6DEA9C36D7D /* BackgroundPhotoLayout.swift */; };
-		D0A7ED6D664B20B4FA8C74BB /* BackgroundLocationExperiment.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4FBA5BAA724F8081C0E1AE8 /* BackgroundLocationExperiment.swift */; };
 		D39A96DA174D592EB1E130ED /* CanvasArtworkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F1CE45F7D8A7C19F33DD9D2 /* CanvasArtworkView.swift */; };
 		DF114FB61E8D05A0D9C84887 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A25E2B887E5DC134279B904B /* PairingView.swift */; };
 		F525DC24A8DA9798629E8E3E /* FullScreenCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 212A75CCB3E28839108D0881 /* FullScreenCanvasView.swift */; };
@@ -94,7 +93,6 @@
 		D8F222EE9775EECFBC460973 /* DrawingSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawingSurface.swift; sourceTree = "<group>"; };
 		DDEB7C3416986E013F256BCE /* WallpaperSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperSetupView.swift; sourceTree = "<group>"; };
 		E02A90D9643568EA39115CFB /* CoupleDrawTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CoupleDrawTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		F4FBA5BAA724F8081C0E1AE8 /* BackgroundLocationExperiment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundLocationExperiment.swift; sourceTree = "<group>"; };
 		F5E0E4512969530383AB07F0 /* CanvasStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasStoreTests.swift; sourceTree = "<group>"; };
 		F69417827A36EF2F289E27CF /* PairSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairSync.swift; sourceTree = "<group>"; };
 		FDD4F6179B3A2A11055053F2 /* PushProduction.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PushProduction.entitlements; sourceTree = "<group>"; };
@@ -157,7 +155,6 @@
 		A9012353AFD6A66EB75D4BE2 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
-				F4FBA5BAA724F8081C0E1AE8 /* BackgroundLocationExperiment.swift */,
 				9C7CA6F32CA643EF0707D174 /* BackgroundPhotoEditor.swift */,
 				64D766ED4C38C6DEA9C36D7D /* BackgroundPhotoLayout.swift */,
 				A6B1F6BC339FE3193FC2117B /* CameraCapture.swift */,
@@ -348,7 +345,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				D0A7ED6D664B20B4FA8C74BB /* BackgroundLocationExperiment.swift in Sources */,
 				817BBBADABA5196E5B9AC912 /* BackgroundPhotoEditor.swift in Sources */,
 				C28076E89F8919C007B58A18 /* BackgroundPhotoLayout.swift in Sources */,
 				155D0BDC938EBBC72D5AFBAF /* CameraCapture.swift in Sources */,

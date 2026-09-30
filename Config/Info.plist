@@ -23,9 +23,6 @@
   </dict>
   <key>NSCameraUsageDescription</key><string>Take a photo to use as your drawing background and share it with your partner when you Apply.</string>
   <key>NSLocalNetworkUsageDescription</key><string>Connect to the CoupleDraw pairing server on your Wi-Fi network to sync drawings with your partner.</string>
-  <key>NSLocationWhenInUseUsageDescription</key><string>Optional experiment to keep CoupleDraw syncing while the app is in the background. Your coordinates are ignored.</string>
-  <key>NSLocationAlwaysAndWhenInUseUsageDescription</key><string>Optional background sync experiment. Your coordinates are ignored and never sent to the pairing service.</string>
-  <key>UIBackgroundModes</key><array><string>location</string></array>
   <key>UIApplicationSceneManifest</key><dict>
     <key>UIApplicationSupportsMultipleScenes</key><false/>
   </dict>
