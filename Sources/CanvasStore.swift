@@ -91,9 +91,9 @@ import UIKit
         // replacement and every referenced file have been written atomically.
         do {
             for slot in readableSlots {
-                try persist(record(slot), to: rootURL.appendingPathComponent("\(slot.rawValue).json"))
+                try migrateMedia(CanvasRecord.self, at: rootURL.appendingPathComponent("\(slot.rawValue).json"), decoder: localDecoder)
             }
-            if savedRevisions != nil { try persist(revisions, to: revisionsURL) }
+            if savedRevisions != nil { try migrateMedia([AppliedRevision].self, at: revisionsURL, decoder: localDecoder) }
             try FileManager.default.createDirectory(at: wallpaperCache, withIntermediateDirectories: true)
             var cacheURL = wallpaperCache
             var values = URLResourceValues()
@@ -493,6 +493,15 @@ import UIKit
     private func persist<T: Encodable>(_ value: T, to url: URL) throws {
         try LocalMediaFiles.withLock(root: root) {
             try encoder.encode(value).write(to: url, options: .atomic)
+        }
+    }
+
+    private func migrateMedia<T: Codable>(_ type: T.Type, at url: URL, decoder: JSONDecoder) throws {
+        try LocalMediaFiles.withLock(root: root) {
+            let data = try Data(contentsOf: url)
+            guard try LocalMediaFiles.needsMigration(data) else { return }
+            let current = try decoder.decode(type, from: data)
+            try encoder.encode(current).write(to: url, options: .atomic)
         }
     }
 

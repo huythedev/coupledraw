@@ -28,6 +28,14 @@ Artwork is rendered at the receiving phone's portrait pixel dimensions for the S
 
 Read [wallpaper and automations](wallpaper-and-automations.md) to create the Shortcut and optionally respond to a partner Apply while the app is closed.
 
+## Paste images and use stickers
+
+Tap **Stickers** in the drawing editor. **Paste** imports an image you copied; **Photos** and **Files** import images directly. You can also drop an image onto this canvas. Tap a sticker (or its thumbnail) to select it, drag to pan, pinch to shrink or enlarge, and twist to tilt. **Size** gives precise control, **Center** brings it back into the frame, **Reset tilt** straightens it, and **Delete** removes it. Transparent images retain transparency. Stickers sit above the drawing and remain separate editable objects.
+
+For keyboard stickers, tap **Keyboard**, switch to your emoji/sticker keyboard, and choose a sticker. The app accepts image attachments and, on iOS 18 or later, adaptive image glyphs such as supported custom emoji. **Add typed emoji** can turn typed emoji into an image. A third-party keyboard that provides only text or a link may need its image copied into **Paste** instead. Animated images become still stickers; keyboard availability depends on the keyboard and device and needs physical-device testing.
+
+Stickers save locally with the draft and are shared on **Apply**, including in Our art; they do not stream live like stroke operations. Both phones and the Python server should use this version. A canvas supports up to 12 stickers within a 1.5 MB total image limit.
+
 ## History and local data
 
 **History** shows applied revisions. Use the share icon to export a PNG manually. **History → Delete all** removes saved revisions and exported PNGs for the open canvas *on this phone*, after confirmation. The editable drawing and paired server copy remain; Apply again to give the Shortcut a current version. Recovered drafts are also in History, but do not replace the applied wallpaper.
@@ -37,3 +45,7 @@ Keep the same app bundle ID and signing Team when installing an update to preser
 ## Lock Screen widget
 
 The **CoupleDrawWidget** extension offers circular, rectangular, and inline Lock Screen styles. Long-press the Lock Screen, choose **Customize → Lock Screen → Add Widgets**, find **CoupleDraw**, add **Open CoupleDraw**, and tap **Done**. Tapping it launches the app with My art selected; iOS may require you to unlock. The widget is a launcher and does not set the wallpaper or display the current drawing. If missing, check that the widget was signed with its own compatible bundle ID and embedded in the installed app.
+
+## Clear cache
+
+Open **Setup → Local storage → Clear cache** to remove rendered wallpaper PNGs and unused media files. The size shown is the removable cache on this phone. Editable drafts, pairing, applied History, and original photos/stickers still referenced by those documents are preserved. Wallpapers regenerate locally when you run the Shortcut or share a History revision, so clearing cache does not require another download. To remove old original images still referenced by History, use **History → Delete all** for that canvas, then Clear cache. Photos/stickers still used by the current draft remain.

@@ -2,7 +2,9 @@
 
 [Back to README](../README.md)
 
-The included [Python server](../server/coupledraw_server.py) uses the standard library and SQLite. It has no hosted instance or account system. Keep one reachable process and a database for the pair; each phone authenticates with its own A or B token. The server stores token hashes, snapshots, whiteboard strokes, settings, and optional alert destinations. Back up the SQLite database, including its associated SQLite WAL data if copying a running database; for a simple backup, stop the service first and copy the database.
+The included [Python server](../server/coupledraw_server.py) uses the standard library and SQLite. It has no hosted instance or account system. Keep one reachable process and a database for the pair; each phone authenticates with its own A or B token. SQLite holds token hashes, snapshot metadata, whiteboard strokes, settings, and optional alert destinations. Background photos and sticker images are stored once as private binary files in `<database path>.media/`, rather than base64 inside SQLite. The service retains media referenced by the latest artwork, so offline or reinstalled phones can retrieve it; unreferenced files are removed automatically after replacement.
+
+**Back up both the database and its media directory.** Stop the service before copying them for a consistent backup. If copying a running SQLite database, its WAL data must also be handled correctly. Keep the media directory private; it does not need a public static-file route.
 
 ## Create a pair on a trusted local network
 
@@ -58,6 +60,16 @@ draw.example.com {
 ```
 
 Use `https://draw.example.com` and each phone's A/B token in **Pair**. Keep port 8787 private. Test an Apply on one phone and open the other to confirm it receives the revision. When upgrading, replace the complete server script and restart the service **without deleting the SQLite database or changing tokens**; upgrade both apps alongside the server to retain the shared whiteboard protocol.
+
+On the first startup of this version, embedded photos in older snapshots migrate to the media directory automatically, and SQLite is compacted to reclaim old photo space. Keep that directory beside the database on subsequent restarts. You may specify a different private directory with `--media-dir /path/to/coupledraw-media`; use the same option for `serve` and `compact`.
+
+To reclaim unused media and SQLite free pages manually, stop the service, run the following in the directory containing the standalone script, then restart it:
+
+```sh
+python3 coupledraw_server.py compact --db coupledraw.sqlite3
+```
+
+This preserves current artwork and tokens. It does not delete the latest photos after a partner receives them, because those files also support later re-sync and reinstall. Older History remains on each phone. Update the server before sharing stickers; the app detects an older server and keeps the sticker draft locally instead of publishing it without images.
 
 For temporary remote testing from a Mac, keep the default loopback server running and start `cloudflared tunnel --url http://127.0.0.1:8787` in another terminal. Enter the generated HTTPS address in Pair on both phones. That address may change when the tunnel restarts.
 

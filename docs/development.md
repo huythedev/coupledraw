@@ -16,7 +16,9 @@ In Xcode, choose **Product → Test** for the PencilKit model tests. The Python 
 
 ## Data and syncing
 
-Local canvases keep editable PencilKit data. Apply stores an immutable revision and a rendered PNG; History also holds recovered drafts if a shared edit conflicts. A background photo remains a separate editable layer. The Shortcut returns the latest selected applied revision at the receiving phone's native portrait dimensions.
+Local canvases keep editable PencilKit data. Apply stores an immutable revision and a regenerable PNG cache; History also holds recovered drafts if a shared edit conflicts. Background photos and stickers are separate editable layers backed by content-addressed local image files, shared by all referencing documents. Legacy inline images migrate on loading. The Shortcut returns the latest selected applied revision at the receiving phone's native portrait dimensions and regenerates its PNG if cache was cleared.
+
+Network JSON still transfers authenticated image data with changed snapshots. The server separates photo/sticker bytes into private content-addressed files and stores only references and placement in snapshot metadata. Old unreferenced media is reclaimed; current media stays available for offline phones. SQLite transactions protect media reads and pruning across server processes. The iOS app and Shortcut serialize local manifest writes and cache cleanup with a file lock. Cache clearing preserves documents and media referenced on disk, including updates made by another app process.
 
 In Our art, completed stroke operations are batched briefly and sent to the paired service. The service returns deltas to active clients; idle long-poll responses carry no artwork. Offline edits are queued with stable operation IDs and retried. Independent strokes merge. A conflicting edit to the same stroke is saved as a recovered draft on the losing phone. Apply flushes local edits, checks current board/revision numbers, and publishes a snapshot. Background photo and color changes are shared on Apply. The board is capped at 3,000 strokes or 3 MB of stroke archives.
 

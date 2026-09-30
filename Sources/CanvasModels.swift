@@ -197,6 +197,17 @@ extension CodingUserInfoKey {
 }
 
 enum LocalMediaFiles {
+    static func needsMigration(_ data: Data) throws -> Bool {
+        func inlineMedia(_ value: Any) -> Bool {
+            if let array = value as? [Any] { return array.contains(where: inlineMedia) }
+            guard let dict = value as? [String: Any] else { return false }
+            if let photo = dict["backgroundPhoto"] as? [String: Any], photo["data"] != nil { return true }
+            if let stickers = dict["stickers"] as? [[String: Any]], stickers.contains(where: { $0["data"] != nil }) { return true }
+            if let document = dict["document"] { return inlineMedia(document) }
+            return false
+        }
+        return inlineMedia(try JSONSerialization.jsonObject(with: data))
+    }
     static func identifier(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }

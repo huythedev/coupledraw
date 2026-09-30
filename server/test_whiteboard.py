@@ -34,6 +34,7 @@ class WhiteboardHTTPTests(unittest.TestCase):
                 db.execute("INSERT INTO members VALUES (?, ?, ?)",
                            (hashlib.sha256(token.encode()).hexdigest(), "pair" if role != "other" else "other", "A" if role == "other" else role))
         self.processes = []
+        self.addCleanup(self.cleanup_resources)
         self.port = self.start_server()
 
     def start_server(self):
@@ -41,20 +42,23 @@ class WhiteboardHTTPTests(unittest.TestCase):
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
         env = {k: v for k, v in os.environ.items() if not k.startswith(("APNS_", "NTFY_"))}
-        process = subprocess.Popen([sys.executable, str(Path(server.__file__)), "serve", "--db", self.db_path, "--port", str(port)],
+        process = subprocess.Popen([sys.executable, "-u", str(Path(server.__file__)), "serve", "--db", self.db_path, "--port", str(port)],
                                    stdout=self.log, stderr=self.log, env=env)
         self.processes.append(process)
-        for _ in range(100):
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=0.1):
                     return port
             except OSError:
                 if process.poll() is not None:
-                    self.fail("Test server did not start")
+                    self.log.seek(0)
+                    self.fail("Test server did not start: " + self.log.read())
                 time.sleep(0.02)
-        self.fail("Test server timed out")
+        self.log.seek(0)
+        self.fail("Test server timed out: " + self.log.read())
 
-    def tearDown(self):
+    def cleanup_resources(self):
         for process in self.processes:
             process.terminate()
             process.wait(timeout=5)
