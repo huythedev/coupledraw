@@ -42,8 +42,7 @@ class WhiteboardHTTPTests(unittest.TestCase):
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
         env = {k: v for k, v in os.environ.items() if not k.startswith(("APNS_", "NTFY_"))}
-        bootstrap = "import faulthandler,runpy,sys; faulthandler.dump_traceback_later(10,repeat=True); script=sys.argv.pop(1); runpy.run_path(script,run_name='__main__')"
-        process = subprocess.Popen([sys.executable, "-u", "-c", bootstrap, str(Path(server.__file__)), "serve", "--db", self.db_path, "--port", str(port)],
+        process = subprocess.Popen([sys.executable, "-u", str(Path(server.__file__)), "serve", "--db", self.db_path, "--port", str(port)],
                                    stdout=self.log, stderr=self.log, env=env)
         self.processes.append(process)
         deadline = time.monotonic() + 30

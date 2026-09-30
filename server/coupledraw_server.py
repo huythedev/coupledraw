@@ -21,6 +21,7 @@ import time
 import warnings
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -30,6 +31,14 @@ MAX_BOARD_BYTES = 3_000_000
 MAX_STROKES = 3000
 lock = threading.RLock()
 state_changed = threading.Condition(lock)
+
+
+class SyncHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer performs reverse DNS here, which can stall local startup.
+        # This service does not use the resolved hostname.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class MediaFiles:
@@ -722,7 +731,7 @@ def serve(db_path, host, port, media_dir=None):
             # Suppress the default raw request line, which can include secrets in query strings.
             pass
 
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd = SyncHTTPServer((host, port), Handler)
     print(f"CoupleDraw sync listening on {host}:{port}; use HTTP only on trusted local Wi-Fi, HTTPS elsewhere")
     print(f"Photos stored in {media.root}; migrated {migrated} inline photos, removed {removed} unused bytes")
     if not push_configured():
