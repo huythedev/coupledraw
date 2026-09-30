@@ -12,6 +12,14 @@ Get My CoupleDraw Wallpaper checks the paired service once when invoked, even if
 
 Apple controls the Set Wallpaper action. CoupleDraw cannot directly call a public iOS API to set the Lock Screen, launch the partner's Shortcut remotely, or bypass an iOS Save screen. An automation does not remove a prompt if the action itself asks for one.
 
+## Keep Spatial Scene off
+
+CoupleDraw renders the background, ink, and stickers into a flat PNG at the phone's screen size. The Shortcut receives that rendered image, rather than the original camera photo, a Live Photo, or depth data. This does **not** guarantee that iOS will skip Spatial Scene: Apple can generate the effect from eligible ordinary photos.
+
+In **Settings → Wallpaper**, tap **Customize** below the Lock Screen used by your Shortcut. If the **Spatial Scene** button is available, turn it off and save your changes. Run the Shortcut again on that same wallpaper and check whether the effect stays off. **Show Preview** controls the wallpaper preview; it does not disable Spatial Scene.
+
+There is no documented Spatial Scene switch for CoupleDraw's App Intent to pass to Apple's Set Wallpaper action. If your Shortcuts version exposes no such option, the app cannot force it off or guarantee that future wallpaper replacements preserve the setting. Do not assume that stripping photo metadata disables an effect iOS generates itself. See [Apple's wallpaper guide](https://support.apple.com/en-us/102638).
+
 ## Respond to a partner Apply
 
 While the app is open, it waits on the server for changes and may show a local alert after a partner Apply. A suspended or closed app does not keep this connection. For an alert while it is closed:
