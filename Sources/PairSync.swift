@@ -161,7 +161,7 @@ private struct ServerError: Decodable { let error: String }
                 for slot in CanvasSlot.allCases {
                     if slot == .second { dirty.remove(slot); continue }
                     let local = store.record(slot)
-                    if !local.drawingData.isEmpty || local.backgroundHex != "#000000" || local.backgroundPhoto != nil {
+                    if !local.drawingData.isEmpty || local.backgroundHex != "#000000" || local.backgroundPhoto != nil || !local.stickers.isEmpty {
                         dirty.insert(slot)
                     }
                 }
