@@ -215,6 +215,26 @@ private struct ServerError: Decodable { let error: String }
 
     func stop() { loop?.cancel(); loop = nil }
 
+    /// Keep queued whiteboard edits on disk for the next foreground session.
+    func suspend() {
+        stop()
+        sessionID = UUID()
+        draftTask?.cancel()
+        draftTask = nil
+    }
+
+    /// A Shortcut gets one fresh response even when the main app is suspended.
+    /// Do not return a stale paired wallpaper if this request fails.
+    func refreshForShortcut(store: CanvasStore) async throws {
+        guard configured else { return }
+        guard let state = try await fetch(force: true) else { throw SyncError.response }
+        role = state.role
+        pushConfigured = state.pushConfigured ?? false
+        ntfyTopic = state.ntfyTopic
+        ntfyBaseURL = state.ntfyBaseURL
+        try await incorporate(state, store: store)
+    }
+
     func enablePartnerAlerts() async {
         guard configured else { notificationsStatus = "Pair first to enable alerts."; return }
         do {

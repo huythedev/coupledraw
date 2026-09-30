@@ -1,556 +1,101 @@
 // !$*UTF8*$!
 {
 	archiveVersion = 1;
-	classes = {
-	};
+	classes = {};
 	objectVersion = 56;
 	objects = {
-
-/* Begin PBXBuildFile section */
-		10D679747046151973E86891 /* CanvasStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91E3D8D7435B6C8286647CEA /* CanvasStore.swift */; };
-		155D0BDC938EBBC72D5AFBAF /* CameraCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6B1F6BC339FE3193FC2117B /* CameraCapture.swift */; };
-		21CD4B57F0020B247471D05E /* PairSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = F69417827A36EF2F289E27CF /* PairSync.swift */; };
-		222F0DBFFE5EB23DCD3FD16F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5B04B2273026590A440D27C9 /* Assets.xcassets */; };
-		28F9D8F26DB3FCF505B6A256 /* DrawingSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8F222EE9775EECFBC460973 /* DrawingSurface.swift */; };
-		3D15D64B13EF21B115E07F84 /* SharedWhiteboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13E3E38FD2B4DE76647EB76 /* SharedWhiteboard.swift */; };
-		43B94C9C2EFE22519BC5E3AD /* WallpaperRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BE0526874A4438AD093D279 /* WallpaperRenderer.swift */; };
-		5457AB9FB521F7F7EF0268A3 /* CoupleDrawWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 4C47665D1BA4105DF9684DC4 /* CoupleDrawWidget.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		5882E599B676D7489B8AB017 /* CoupleDrawApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28CAA9296B2FF68D89891B8D /* CoupleDrawApp.swift */; };
-		5E6D6E9099515FA2CBD5E11F /* LatestWallpaperIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22D70554499E1F652FD3F895 /* LatestWallpaperIntent.swift */; };
-		77A214C1EE7EF6FE9D4F918E /* RevisionHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1DF302D802A8E3E0657EAD7 /* RevisionHistory.swift */; };
-		7A4341951735CDA3E117EE7A /* EditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B36321DEB52A32583D3BB8C1 /* EditorView.swift */; };
-		7C7FCE01A37DEBF39F9AF361 /* CanvasStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5E0E4512969530383AB07F0 /* CanvasStoreTests.swift */; };
-		7FDB3A36C54B94593C47DF4D /* PushAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC297892E4EF9D3471D8F22E /* PushAppDelegate.swift */; };
-		817BBBADABA5196E5B9AC912 /* BackgroundPhotoEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C7CA6F32CA643EF0707D174 /* BackgroundPhotoEditor.swift */; };
-		84034DA6AF406C5A4F9F6166 /* CoupleDrawOpenWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32FACB7970DBCB70972B2FBB /* CoupleDrawOpenWidget.swift */; };
-		9AFDB7C37851987C7C132275 /* WallpaperSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDEB7C3416986E013F256BCE /* WallpaperSetupView.swift */; };
-		B6537B19DC1E87E33A1C0817 /* CanvasModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6837C3A84276A744B1EC1EC /* CanvasModels.swift */; };
-		C28076E89F8919C007B58A18 /* BackgroundPhotoLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64D766ED4C38C6DEA9C36D7D /* BackgroundPhotoLayout.swift */; };
-		D0A7ED6D664B20B4FA8C74BB /* BackgroundLocationExperiment.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4FBA5BAA724F8081C0E1AE8 /* BackgroundLocationExperiment.swift */; };
-		D39A96DA174D592EB1E130ED /* CanvasArtworkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F1CE45F7D8A7C19F33DD9D2 /* CanvasArtworkView.swift */; };
-		DF114FB61E8D05A0D9C84887 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A25E2B887E5DC134279B904B /* PairingView.swift */; };
-		F525DC24A8DA9798629E8E3E /* FullScreenCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 212A75CCB3E28839108D0881 /* FullScreenCanvasView.swift */; };
-		FA700B5F4A26BE2FBF81A308 /* SharedWhiteboardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1988D44075226FAA20DB7B37 /* SharedWhiteboardTests.swift */; };
-		FC1D4C0F5C7E077279D96F62 /* PartnerTargetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51643CA4A5C466217339A4FA /* PartnerTargetView.swift */; };
-/* End PBXBuildFile section */
-
-/* Begin PBXContainerItemProxy section */
-		0DD22CB6C2E8E29B0AF6C12D /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 98F54143AB4E86B28C3AFEE0 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = A5A0AA9F4FB5BC8D9254438A;
-			remoteInfo = CoupleDrawWidget;
-		};
-		2B4D2F8BFE54E9562F422278 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 98F54143AB4E86B28C3AFEE0 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 29C7B681C8D62CBAC94D51C0;
-			remoteInfo = CoupleDraw;
-		};
-/* End PBXContainerItemProxy section */
-
-/* Begin PBXCopyFilesBuildPhase section */
-		354DE1AFDDAA7FBB961D5290 /* Embed App Extensions */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 13;
-			files = (
-				5457AB9FB521F7F7EF0268A3 /* CoupleDrawWidget.appex in Embed App Extensions */,
-			);
-			name = "Embed App Extensions";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
-
-/* Begin PBXFileReference section */
-		1988D44075226FAA20DB7B37 /* SharedWhiteboardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedWhiteboardTests.swift; sourceTree = "<group>"; };
-		212A75CCB3E28839108D0881 /* FullScreenCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullScreenCanvasView.swift; sourceTree = "<group>"; };
-		22D70554499E1F652FD3F895 /* LatestWallpaperIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LatestWallpaperIntent.swift; sourceTree = "<group>"; };
-		28CAA9296B2FF68D89891B8D /* CoupleDrawApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoupleDrawApp.swift; sourceTree = "<group>"; };
-		32FACB7970DBCB70972B2FBB /* CoupleDrawOpenWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoupleDrawOpenWidget.swift; sourceTree = "<group>"; };
-		4C47665D1BA4105DF9684DC4 /* CoupleDrawWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CoupleDrawWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		51643CA4A5C466217339A4FA /* PartnerTargetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PartnerTargetView.swift; sourceTree = "<group>"; };
-		5B04B2273026590A440D27C9 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		64D766ED4C38C6DEA9C36D7D /* BackgroundPhotoLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundPhotoLayout.swift; sourceTree = "<group>"; };
-		7B594B6DB375E1BF3F23CDD6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		8EC9A00BFD09B3190AC6B222 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
-		91E3D8D7435B6C8286647CEA /* CanvasStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasStore.swift; sourceTree = "<group>"; };
-		9BE0526874A4438AD093D279 /* WallpaperRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperRenderer.swift; sourceTree = "<group>"; };
-		9C7CA6F32CA643EF0707D174 /* BackgroundPhotoEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundPhotoEditor.swift; sourceTree = "<group>"; };
-		9F1CE45F7D8A7C19F33DD9D2 /* CanvasArtworkView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasArtworkView.swift; sourceTree = "<group>"; };
-		A1DF302D802A8E3E0657EAD7 /* RevisionHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RevisionHistory.swift; sourceTree = "<group>"; };
-		A25E2B887E5DC134279B904B /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
-		A6B1F6BC339FE3193FC2117B /* CameraCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCapture.swift; sourceTree = "<group>"; };
-		B081DE93265478A96AE4EFCB /* WidgetInfo.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = WidgetInfo.plist; sourceTree = "<group>"; };
-		B36321DEB52A32583D3BB8C1 /* EditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorView.swift; sourceTree = "<group>"; };
-		B6CDB6E5D160E013280D3C68 /* CoupleDraw.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CoupleDraw.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		BC297892E4EF9D3471D8F22E /* PushAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushAppDelegate.swift; sourceTree = "<group>"; };
-		C6837C3A84276A744B1EC1EC /* CanvasModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasModels.swift; sourceTree = "<group>"; };
-		D13E3E38FD2B4DE76647EB76 /* SharedWhiteboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedWhiteboard.swift; sourceTree = "<group>"; };
-		D644B645716E0C5C135AB7C3 /* PushDevelopment.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PushDevelopment.entitlements; sourceTree = "<group>"; };
-		D8F222EE9775EECFBC460973 /* DrawingSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawingSurface.swift; sourceTree = "<group>"; };
-		DDEB7C3416986E013F256BCE /* WallpaperSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperSetupView.swift; sourceTree = "<group>"; };
-		E02A90D9643568EA39115CFB /* CoupleDrawTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CoupleDrawTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		F4FBA5BAA724F8081C0E1AE8 /* BackgroundLocationExperiment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundLocationExperiment.swift; sourceTree = "<group>"; };
-		F5E0E4512969530383AB07F0 /* CanvasStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasStoreTests.swift; sourceTree = "<group>"; };
-		F69417827A36EF2F289E27CF /* PairSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairSync.swift; sourceTree = "<group>"; };
-		FDD4F6179B3A2A11055053F2 /* PushProduction.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PushProduction.entitlements; sourceTree = "<group>"; };
-/* End PBXFileReference section */
-
-/* Begin PBXFrameworksBuildPhase section */
-		C86C06E737A2123D76E2FABB /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		F001BC2AF9EB5498B3360756 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		F115AF690239BFBFCB7B4DE6 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXFrameworksBuildPhase section */
-
-/* Begin PBXGroup section */
-		156052F04525D0F710673CF0 /* Tests */ = {
-			isa = PBXGroup;
-			children = (
-				F5E0E4512969530383AB07F0 /* CanvasStoreTests.swift */,
-				1988D44075226FAA20DB7B37 /* SharedWhiteboardTests.swift */,
-			);
-			path = Tests;
-			sourceTree = "<group>";
-		};
-		5151B46607EBC8890D8DFCC2 = {
-			isa = PBXGroup;
-			children = (
-				B6CDB6E5D160E013280D3C68 /* CoupleDraw.app */,
-				E02A90D9643568EA39115CFB /* CoupleDrawTests.xctest */,
-				4C47665D1BA4105DF9684DC4 /* CoupleDrawWidget.appex */,
-			);
-			sourceTree = "<group>";
-		};
-		5619E268CFFE28118C19FC6A /* Config */ = {
-			isa = PBXGroup;
-			children = (
-				7B594B6DB375E1BF3F23CDD6 /* Info.plist */,
-				B081DE93265478A96AE4EFCB /* WidgetInfo.plist */,
-				D644B645716E0C5C135AB7C3 /* PushDevelopment.entitlements */,
-				FDD4F6179B3A2A11055053F2 /* PushProduction.entitlements */,
-			);
-			path = Config;
-			sourceTree = "<group>";
-		};
-		A9012353AFD6A66EB75D4BE2 /* Sources */ = {
-			isa = PBXGroup;
-			children = (
-				F4FBA5BAA724F8081C0E1AE8 /* BackgroundLocationExperiment.swift */,
-				9C7CA6F32CA643EF0707D174 /* BackgroundPhotoEditor.swift */,
-				64D766ED4C38C6DEA9C36D7D /* BackgroundPhotoLayout.swift */,
-				A6B1F6BC339FE3193FC2117B /* CameraCapture.swift */,
-				9F1CE45F7D8A7C19F33DD9D2 /* CanvasArtworkView.swift */,
-				C6837C3A84276A744B1EC1EC /* CanvasModels.swift */,
-				91E3D8D7435B6C8286647CEA /* CanvasStore.swift */,
-				28CAA9296B2FF68D89891B8D /* CoupleDrawApp.swift */,
-				D8F222EE9775EECFBC460973 /* DrawingSurface.swift */,
-				B36321DEB52A32583D3BB8C1 /* EditorView.swift */,
-				212A75CCB3E28839108D0881 /* FullScreenCanvasView.swift */,
-				22D70554499E1F652FD3F895 /* LatestWallpaperIntent.swift */,
-				F69417827A36EF2F289E27CF /* PairSync.swift */,
-				A25E2B887E5DC134279B904B /* PairingView.swift */,
-				51643CA4A5C466217339A4FA /* PartnerTargetView.swift */,
-				BC297892E4EF9D3471D8F22E /* PushAppDelegate.swift */,
-				A1DF302D802A8E3E0657EAD7 /* RevisionHistory.swift */,
-				D13E3E38FD2B4DE76647EB76 /* SharedWhiteboard.swift */,
-				9BE0526874A4438AD093D279 /* WallpaperRenderer.swift */,
-				DDEB7C3416986E013F256BCE /* WallpaperSetupView.swift */,
-			);
-			path = Sources;
-			sourceTree = "<group>";
-		};
-		DDF05173B376DE398B5EAD82 /* Widget */ = {
-			isa = PBXGroup;
-			children = (
-				32FACB7970DBCB70972B2FBB /* CoupleDrawOpenWidget.swift */,
-			);
-			path = Widget;
-			sourceTree = "<group>";
-		};
-		DF891E785808226D241F246E = {
-			isa = PBXGroup;
-			children = (
-				A9012353AFD6A66EB75D4BE2 /* Sources */,
-				E3E43A9590E8EF36FE4ABC44,
-				DDF05173B376DE398B5EAD82 /* Widget */,
-				156052F04525D0F710673CF0 /* Tests */,
-				5619E268CFFE28118C19FC6A /* Config */,
-				8EC9A00BFD09B3190AC6B222 /* README.md */,
-				5151B46607EBC8890D8DFCC2,
-			);
-			sourceTree = "<group>";
-		};
-		E3E43A9590E8EF36FE4ABC44 = {
-			isa = PBXGroup;
-			children = (
-				5B04B2273026590A440D27C9 /* Assets.xcassets */,
-			);
-			sourceTree = "<group>";
-		};
-/* End PBXGroup section */
-
-/* Begin PBXNativeTarget section */
-		29C7B681C8D62CBAC94D51C0 /* CoupleDraw */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 32995943DE67267A65D32CA9 /* Build configuration list for PBXNativeTarget "CoupleDraw" */;
-			buildPhases = (
-				8682261519D15BD64A9E5D31 /* Sources */,
-				F001BC2AF9EB5498B3360756 /* Frameworks */,
-				E28FAD8F60ECDED9B4AD087A /* Resources */,
-				354DE1AFDDAA7FBB961D5290 /* Embed App Extensions */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				A4C80477431259D93FE11E57 /* PBXTargetDependency */,
-			);
-			name = CoupleDraw;
-			productName = CoupleDraw;
-			productReference = B6CDB6E5D160E013280D3C68 /* CoupleDraw.app */;
-			productType = "com.apple.product-type.application";
-		};
-		7EC8F98B7A265120217712DE /* CoupleDrawTests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 6137A6F58D979B3DA500C290 /* Build configuration list for PBXNativeTarget "CoupleDrawTests" */;
-			buildPhases = (
-				B6F43314D0693B2B792DAE17 /* Sources */,
-				F115AF690239BFBFCB7B4DE6 /* Frameworks */,
-				2BD6B9B82414E6AB1198F133 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				F59E8266325E0BAF0758C1B1 /* PBXTargetDependency */,
-			);
-			name = CoupleDrawTests;
-			productName = CoupleDrawTests;
-			productReference = E02A90D9643568EA39115CFB /* CoupleDrawTests.xctest */;
-			productType = "com.apple.product-type.bundle.unit-test";
-		};
-		A5A0AA9F4FB5BC8D9254438A /* CoupleDrawWidget */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 0F2F9B54D12A43C3DA590081 /* Build configuration list for PBXNativeTarget "CoupleDrawWidget" */;
-			buildPhases = (
-				85B53C7A615CCE39E04693F3 /* Sources */,
-				C86C06E737A2123D76E2FABB /* Frameworks */,
-				A0AD9CEC41780F670929E69C /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = CoupleDrawWidget;
-			productName = CoupleDrawWidget;
-			productReference = 4C47665D1BA4105DF9684DC4 /* CoupleDrawWidget.appex */;
-			productType = "com.apple.product-type.app-extension";
-		};
-/* End PBXNativeTarget section */
-
-/* Begin PBXProject section */
-		98F54143AB4E86B28C3AFEE0 /* Project object */ = {
-			isa = PBXProject;
-			attributes = {
-				BuildIndependentTargetsInParallel = 1;
-				LastUpgradeCheck = 1600;
-				TargetAttributes = {
-					29C7B681C8D62CBAC94D51C0 = {
-						CreatedOnToolsVersion = 16.0;
-						ProvisioningStyle = Automatic;
-					};
-					7EC8F98B7A265120217712DE = {
-						CreatedOnToolsVersion = 16.0;
-						ProvisioningStyle = Automatic;
-						TestTargetID = 29C7B681C8D62CBAC94D51C0;
-					};
-					A5A0AA9F4FB5BC8D9254438A = {
-						CreatedOnToolsVersion = 16.0;
-						ProvisioningStyle = Automatic;
-					};
-				};
-			};
-			buildConfigurationList = 12D04D787E90C9B967248BFD /* Build configuration list for PBXProject "CoupleDraw" */;
-			compatibilityVersion = "Xcode 14.0";
-			developmentRegion = en;
-			hasScannedForEncodings = 0;
-			knownRegions = (
-				en,
-				Base,
-			);
-			mainGroup = DF891E785808226D241F246E;
-			productRefGroup = 5151B46607EBC8890D8DFCC2;
-			projectDirPath = "";
-			projectRoot = "";
-			targets = (
-				29C7B681C8D62CBAC94D51C0 /* CoupleDraw */,
-				7EC8F98B7A265120217712DE /* CoupleDrawTests */,
-				A5A0AA9F4FB5BC8D9254438A /* CoupleDrawWidget */,
-			);
-		};
-/* End PBXProject section */
-
-/* Begin PBXResourcesBuildPhase section */
-		2BD6B9B82414E6AB1198F133 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		A0AD9CEC41780F670929E69C /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		E28FAD8F60ECDED9B4AD087A /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				222F0DBFFE5EB23DCD3FD16F /* Assets.xcassets in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXResourcesBuildPhase section */
-
-/* Begin PBXSourcesBuildPhase section */
-		85B53C7A615CCE39E04693F3 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				84034DA6AF406C5A4F9F6166 /* CoupleDrawOpenWidget.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		8682261519D15BD64A9E5D31 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				D0A7ED6D664B20B4FA8C74BB /* BackgroundLocationExperiment.swift in Sources */,
-				817BBBADABA5196E5B9AC912 /* BackgroundPhotoEditor.swift in Sources */,
-				C28076E89F8919C007B58A18 /* BackgroundPhotoLayout.swift in Sources */,
-				155D0BDC938EBBC72D5AFBAF /* CameraCapture.swift in Sources */,
-				D39A96DA174D592EB1E130ED /* CanvasArtworkView.swift in Sources */,
-				B6537B19DC1E87E33A1C0817 /* CanvasModels.swift in Sources */,
-				10D679747046151973E86891 /* CanvasStore.swift in Sources */,
-				5882E599B676D7489B8AB017 /* CoupleDrawApp.swift in Sources */,
-				28F9D8F26DB3FCF505B6A256 /* DrawingSurface.swift in Sources */,
-				7A4341951735CDA3E117EE7A /* EditorView.swift in Sources */,
-				F525DC24A8DA9798629E8E3E /* FullScreenCanvasView.swift in Sources */,
-				5E6D6E9099515FA2CBD5E11F /* LatestWallpaperIntent.swift in Sources */,
-				21CD4B57F0020B247471D05E /* PairSync.swift in Sources */,
-				DF114FB61E8D05A0D9C84887 /* PairingView.swift in Sources */,
-				FC1D4C0F5C7E077279D96F62 /* PartnerTargetView.swift in Sources */,
-				7FDB3A36C54B94593C47DF4D /* PushAppDelegate.swift in Sources */,
-				77A214C1EE7EF6FE9D4F918E /* RevisionHistory.swift in Sources */,
-				3D15D64B13EF21B115E07F84 /* SharedWhiteboard.swift in Sources */,
-				43B94C9C2EFE22519BC5E3AD /* WallpaperRenderer.swift in Sources */,
-				9AFDB7C37851987C7C132275 /* WallpaperSetupView.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		B6F43314D0693B2B792DAE17 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				7C7FCE01A37DEBF39F9AF361 /* CanvasStoreTests.swift in Sources */,
-				FA700B5F4A26BE2FBF81A308 /* SharedWhiteboardTests.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXSourcesBuildPhase section */
-
-/* Begin PBXTargetDependency section */
-		A4C80477431259D93FE11E57 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = A5A0AA9F4FB5BC8D9254438A /* CoupleDrawWidget */;
-			targetProxy = 0DD22CB6C2E8E29B0AF6C12D /* PBXContainerItemProxy */;
-		};
-		F59E8266325E0BAF0758C1B1 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 29C7B681C8D62CBAC94D51C0 /* CoupleDraw */;
-			targetProxy = 2B4D2F8BFE54E9562F422278 /* PBXContainerItemProxy */;
-		};
-/* End PBXTargetDependency section */
-
-/* Begin XCBuildConfiguration section */
-		23FB2CAEB38545C3793097DD /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 9V29GT3242;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Config/Info.plist;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.CoupleDraw;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SWIFT_EMIT_LOC_STRINGS = YES;
-			};
-			name = Release;
-		};
-		3CF6A4F2E05B3AAE7E2CBFEE /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 9V29GT3242;
-				ENABLE_TESTABILITY = YES;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Config/Info.plist;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.CoupleDraw;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SWIFT_EMIT_LOC_STRINGS = YES;
-			};
-			name = Debug;
-		};
-		4EB605AD2E4EE7316ACCD6DD /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				APPLICATION_EXTENSION_API_ONLY = YES;
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 9V29GT3242;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Config/WidgetInfo.plist;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.CoupleDraw.Widget;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SWIFT_EMIT_LOC_STRINGS = YES;
-			};
-			name = Release;
-		};
-		877A6BA951A2EA0025A2ABE8 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CLANG_ENABLE_MODULES = YES;
-				DEBUG_INFORMATION_FORMAT = dwarf;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				SDKROOT = iphoneos;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 1;
-			};
-			name = Debug;
-		};
-		959134B361DD7E21ADEA3164 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CLANG_ENABLE_MODULES = YES;
-				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				SDKROOT = iphoneos;
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 1;
-			};
-			name = Release;
-		};
-		B4343C19535B18410503AED7 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				GENERATE_INFOPLIST_FILE = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.CoupleDrawTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CoupleDraw.app/CoupleDraw";
-			};
-			name = Release;
-		};
-		E2657B9FA91DD4A55652006F /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				GENERATE_INFOPLIST_FILE = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.CoupleDrawTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CoupleDraw.app/CoupleDraw";
-			};
-			name = Debug;
-		};
-		F4B7E5BA8E58CF01A465BB80 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				APPLICATION_EXTENSION_API_ONLY = YES;
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 9V29GT3242;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Config/WidgetInfo.plist;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.CoupleDraw.Widget;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SWIFT_EMIT_LOC_STRINGS = YES;
-			};
-			name = Debug;
-		};
-/* End XCBuildConfiguration section */
-
-/* Begin XCConfigurationList section */
-		0F2F9B54D12A43C3DA590081 /* Build configuration list for PBXNativeTarget "CoupleDrawWidget" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				F4B7E5BA8E58CF01A465BB80 /* Debug */,
-				4EB605AD2E4EE7316ACCD6DD /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		12D04D787E90C9B967248BFD /* Build configuration list for PBXProject "CoupleDraw" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				877A6BA951A2EA0025A2ABE8 /* Debug */,
-				959134B361DD7E21ADEA3164 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		32995943DE67267A65D32CA9 /* Build configuration list for PBXNativeTarget "CoupleDraw" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				3CF6A4F2E05B3AAE7E2CBFEE /* Debug */,
-				23FB2CAEB38545C3793097DD /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		6137A6F58D979B3DA500C290 /* Build configuration list for PBXNativeTarget "CoupleDrawTests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				E2657B9FA91DD4A55652006F /* Debug */,
-				B4343C19535B18410503AED7 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-/* End XCConfigurationList section */
+		0DD22CB6C2E8E29B0AF6C12D /* proxy:widget */ = { isa = PBXContainerItemProxy; containerPortal = 98F54143AB4E86B28C3AFEE0 /* project */; proxyType = 1; remoteGlobalIDString = A5A0AA9F4FB5BC8D9254438A; remoteInfo = CoupleDrawWidget; };
+		0F2F9B54D12A43C3DA590081 /* configlist:widget */ = { isa = XCConfigurationList; buildConfigurations = (F4B7E5BA8E58CF01A465BB80 /* config:widget:Debug */, 4EB605AD2E4EE7316ACCD6DD /* config:widget:Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		10D679747046151973E86891 /* build:CanvasStore.swift */ = { isa = PBXBuildFile; fileRef = 91E3D8D7435B6C8286647CEA /* ref:CanvasStore.swift */; };
+		12D04D787E90C9B967248BFD /* configlist:project */ = { isa = XCConfigurationList; buildConfigurations = (877A6BA951A2EA0025A2ABE8 /* config:project:Debug */, 959134B361DD7E21ADEA3164 /* config:project:Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		155D0BDC938EBBC72D5AFBAF /* build:CameraCapture.swift */ = { isa = PBXBuildFile; fileRef = A6B1F6BC339FE3193FC2117B /* ref:CameraCapture.swift */; };
+		156052F04525D0F710673CF0 /* group:Tests */ = { isa = PBXGroup; children = (F5E0E4512969530383AB07F0 /* ref:CanvasStoreTests.swift */, 1988D44075226FAA20DB7B37 /* ref:SharedWhiteboardTests.swift */, ); path = "Tests"; sourceTree = "<group>"; };
+		1988D44075226FAA20DB7B37 /* ref:SharedWhiteboardTests.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SharedWhiteboardTests.swift"; sourceTree = "<group>"; };
+		212A75CCB3E28839108D0881 /* ref:FullScreenCanvasView.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FullScreenCanvasView.swift"; sourceTree = "<group>"; };
+		21CD4B57F0020B247471D05E /* build:PairSync.swift */ = { isa = PBXBuildFile; fileRef = F69417827A36EF2F289E27CF /* ref:PairSync.swift */; };
+		222F0DBFFE5EB23DCD3FD16F /* build:Assets.xcassets */ = { isa = PBXBuildFile; fileRef = 5B04B2273026590A440D27C9 /* ref:Assets.xcassets */; };
+		22D70554499E1F652FD3F895 /* ref:LatestWallpaperIntent.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LatestWallpaperIntent.swift"; sourceTree = "<group>"; };
+		23FB2CAEB38545C3793097DD /* config:app:Release */ = { isa = XCBuildConfiguration; buildSettings = { ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = Config/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = com.example.CoupleDraw; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; }; name = Release; };
+		28CAA9296B2FF68D89891B8D /* ref:CoupleDrawApp.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CoupleDrawApp.swift"; sourceTree = "<group>"; };
+		28F9D8F26DB3FCF505B6A256 /* build:DrawingSurface.swift */ = { isa = PBXBuildFile; fileRef = D8F222EE9775EECFBC460973 /* ref:DrawingSurface.swift */; };
+		29C7B681C8D62CBAC94D51C0 /* target:app */ = { isa = PBXNativeTarget; buildConfigurationList = 32995943DE67267A65D32CA9 /* configlist:app */; buildPhases = (8682261519D15BD64A9E5D31 /* phase:app:sources */, F001BC2AF9EB5498B3360756 /* phase:app:frameworks */, E28FAD8F60ECDED9B4AD087A /* phase:app:resources */, 354DE1AFDDAA7FBB961D5290 /* phase:app:embed */, ); buildRules = (); dependencies = (A4C80477431259D93FE11E57 /* dependency:widget */, ); name = CoupleDraw; productName = CoupleDraw; productReference = B6CDB6E5D160E013280D3C68 /* product:app */; productType = "com.apple.product-type.application"; };
+		2B4D2F8BFE54E9562F422278 /* proxy:tests */ = { isa = PBXContainerItemProxy; containerPortal = 98F54143AB4E86B28C3AFEE0 /* project */; proxyType = 1; remoteGlobalIDString = 29C7B681C8D62CBAC94D51C0; remoteInfo = CoupleDraw; };
+		2BD6B9B82414E6AB1198F133 /* phase:tests:resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		32995943DE67267A65D32CA9 /* configlist:app */ = { isa = XCConfigurationList; buildConfigurations = (3CF6A4F2E05B3AAE7E2CBFEE /* config:app:Debug */, 23FB2CAEB38545C3793097DD /* config:app:Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		32FACB7970DBCB70972B2FBB /* ref:CoupleDrawOpenWidget.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CoupleDrawOpenWidget.swift"; sourceTree = "<group>"; };
+		354DE1AFDDAA7FBB961D5290 /* phase:app:embed */ = { isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (5457AB9FB521F7F7EF0268A3 /* embed:widget */, ); name = "Embed App Extensions"; runOnlyForDeploymentPostprocessing = 0; };
+		3CF6A4F2E05B3AAE7E2CBFEE /* config:app:Debug */ = { isa = XCBuildConfiguration; buildSettings = { ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = Config/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = com.example.CoupleDraw; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; ENABLE_TESTABILITY = YES; }; name = Debug; };
+		3D15D64B13EF21B115E07F84 /* build:SharedWhiteboard.swift */ = { isa = PBXBuildFile; fileRef = D13E3E38FD2B4DE76647EB76 /* ref:SharedWhiteboard.swift */; };
+		43B94C9C2EFE22519BC5E3AD /* build:WallpaperRenderer.swift */ = { isa = PBXBuildFile; fileRef = 9BE0526874A4438AD093D279 /* ref:WallpaperRenderer.swift */; };
+		4C47665D1BA4105DF9684DC4 /* product:widget */ = { isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CoupleDrawWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		4EB605AD2E4EE7316ACCD6DD /* config:widget:Release */ = { isa = XCBuildConfiguration; buildSettings = { APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = Config/WidgetInfo.plist; PRODUCT_BUNDLE_IDENTIFIER = com.example.CoupleDraw.Widget; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; }; name = Release; };
+		5151B46607EBC8890D8DFCC2 /* group:Products */ = { isa = PBXGroup; children = (B6CDB6E5D160E013280D3C68 /* product:app */, E02A90D9643568EA39115CFB /* product:tests */, 4C47665D1BA4105DF9684DC4 /* product:widget */, ); sourceTree = "<group>"; };
+		51643CA4A5C466217339A4FA /* ref:PartnerTargetView.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PartnerTargetView.swift"; sourceTree = "<group>"; };
+		5457AB9FB521F7F7EF0268A3 /* embed:widget */ = { isa = PBXBuildFile; fileRef = 4C47665D1BA4105DF9684DC4 /* product:widget */; settings = { ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		5619E268CFFE28118C19FC6A /* group:Config */ = { isa = PBXGroup; children = (7B594B6DB375E1BF3F23CDD6 /* Info.plist */, B081DE93265478A96AE4EFCB /* WidgetInfo.plist */, D644B645716E0C5C135AB7C3 /* PushDevelopment.entitlements */, FDD4F6179B3A2A11055053F2 /* PushProduction.entitlements */, ); path = "Config"; sourceTree = "<group>"; };
+		5882E599B676D7489B8AB017 /* build:CoupleDrawApp.swift */ = { isa = PBXBuildFile; fileRef = 28CAA9296B2FF68D89891B8D /* ref:CoupleDrawApp.swift */; };
+		5B04B2273026590A440D27C9 /* ref:Assets.xcassets */ = { isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		5E6D6E9099515FA2CBD5E11F /* build:LatestWallpaperIntent.swift */ = { isa = PBXBuildFile; fileRef = 22D70554499E1F652FD3F895 /* ref:LatestWallpaperIntent.swift */; };
+		6137A6F58D979B3DA500C290 /* configlist:tests */ = { isa = XCConfigurationList; buildConfigurations = (E2657B9FA91DD4A55652006F /* config:tests:Debug */, B4343C19535B18410503AED7 /* config:tests:Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		64D766ED4C38C6DEA9C36D7D /* ref:BackgroundPhotoLayout.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BackgroundPhotoLayout.swift"; sourceTree = "<group>"; };
+		77A214C1EE7EF6FE9D4F918E /* build:RevisionHistory.swift */ = { isa = PBXBuildFile; fileRef = A1DF302D802A8E3E0657EAD7 /* ref:RevisionHistory.swift */; };
+		7A4341951735CDA3E117EE7A /* build:EditorView.swift */ = { isa = PBXBuildFile; fileRef = B36321DEB52A32583D3BB8C1 /* ref:EditorView.swift */; };
+		7B594B6DB375E1BF3F23CDD6 /* Info.plist */ = { isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		7C7FCE01A37DEBF39F9AF361 /* build:CanvasStoreTests.swift */ = { isa = PBXBuildFile; fileRef = F5E0E4512969530383AB07F0 /* ref:CanvasStoreTests.swift */; };
+		7EC8F98B7A265120217712DE /* target:tests */ = { isa = PBXNativeTarget; buildConfigurationList = 6137A6F58D979B3DA500C290 /* configlist:tests */; buildPhases = (B6F43314D0693B2B792DAE17 /* phase:tests:sources */, F115AF690239BFBFCB7B4DE6 /* phase:tests:frameworks */, 2BD6B9B82414E6AB1198F133 /* phase:tests:resources */, ); buildRules = (); dependencies = (F59E8266325E0BAF0758C1B1 /* dependency:tests */, ); name = CoupleDrawTests; productName = CoupleDrawTests; productReference = E02A90D9643568EA39115CFB /* product:tests */; productType = "com.apple.product-type.bundle.unit-test"; };
+		7FDB3A36C54B94593C47DF4D /* build:PushAppDelegate.swift */ = { isa = PBXBuildFile; fileRef = BC297892E4EF9D3471D8F22E /* ref:PushAppDelegate.swift */; };
+		817BBBADABA5196E5B9AC912 /* build:BackgroundPhotoEditor.swift */ = { isa = PBXBuildFile; fileRef = 9C7CA6F32CA643EF0707D174 /* ref:BackgroundPhotoEditor.swift */; };
+		84034DA6AF406C5A4F9F6166 /* build:CoupleDrawOpenWidget.swift */ = { isa = PBXBuildFile; fileRef = 32FACB7970DBCB70972B2FBB /* ref:CoupleDrawOpenWidget.swift */; };
+		85B53C7A615CCE39E04693F3 /* phase:widget:sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (84034DA6AF406C5A4F9F6166 /* build:CoupleDrawOpenWidget.swift */, ); runOnlyForDeploymentPostprocessing = 0; };
+		8682261519D15BD64A9E5D31 /* phase:app:sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (817BBBADABA5196E5B9AC912 /* build:BackgroundPhotoEditor.swift */, C28076E89F8919C007B58A18 /* build:BackgroundPhotoLayout.swift */, 155D0BDC938EBBC72D5AFBAF /* build:CameraCapture.swift */, D39A96DA174D592EB1E130ED /* build:CanvasArtworkView.swift */, B6537B19DC1E87E33A1C0817 /* build:CanvasModels.swift */, 10D679747046151973E86891 /* build:CanvasStore.swift */, 5882E599B676D7489B8AB017 /* build:CoupleDrawApp.swift */, 28F9D8F26DB3FCF505B6A256 /* build:DrawingSurface.swift */, 7A4341951735CDA3E117EE7A /* build:EditorView.swift */, F525DC24A8DA9798629E8E3E /* build:FullScreenCanvasView.swift */, 5E6D6E9099515FA2CBD5E11F /* build:LatestWallpaperIntent.swift */, 21CD4B57F0020B247471D05E /* build:PairSync.swift */, DF114FB61E8D05A0D9C84887 /* build:PairingView.swift */, FC1D4C0F5C7E077279D96F62 /* build:PartnerTargetView.swift */, 7FDB3A36C54B94593C47DF4D /* build:PushAppDelegate.swift */, 77A214C1EE7EF6FE9D4F918E /* build:RevisionHistory.swift */, 3D15D64B13EF21B115E07F84 /* build:SharedWhiteboard.swift */, 43B94C9C2EFE22519BC5E3AD /* build:WallpaperRenderer.swift */, 9AFDB7C37851987C7C132275 /* build:WallpaperSetupView.swift */, ); runOnlyForDeploymentPostprocessing = 0; };
+		877A6BA951A2EA0025A2ABE8 /* config:project:Debug */ = { isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1"; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; DEBUG_INFORMATION_FORMAT = dwarf; }; name = Debug; };
+		8EC9A00BFD09B3190AC6B222 /* README.md */ = { isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		91E3D8D7435B6C8286647CEA /* ref:CanvasStore.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CanvasStore.swift"; sourceTree = "<group>"; };
+		959134B361DD7E21ADEA3164 /* config:project:Release */ = { isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1"; SWIFT_OPTIMIZATION_LEVEL = "-O"; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; }; name = Release; };
+		98F54143AB4E86B28C3AFEE0 /* project */ = { isa = PBXProject; attributes = { BuildIndependentTargetsInParallel = 1; LastUpgradeCheck = 1600; TargetAttributes = { 29C7B681C8D62CBAC94D51C0 = { CreatedOnToolsVersion = 16.0; ProvisioningStyle = Automatic; }; 7EC8F98B7A265120217712DE = { CreatedOnToolsVersion = 16.0; ProvisioningStyle = Automatic; TestTargetID = 29C7B681C8D62CBAC94D51C0; }; A5A0AA9F4FB5BC8D9254438A = { CreatedOnToolsVersion = 16.0; ProvisioningStyle = Automatic; }; }; }; buildConfigurationList = 12D04D787E90C9B967248BFD /* configlist:project */; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base, ); mainGroup = DF891E785808226D241F246E /* group:root */; productRefGroup = 5151B46607EBC8890D8DFCC2 /* group:Products */; projectDirPath = ""; projectRoot = ""; targets = (29C7B681C8D62CBAC94D51C0 /* target:app */, 7EC8F98B7A265120217712DE /* target:tests */, A5A0AA9F4FB5BC8D9254438A /* target:widget */, ); };
+		9AFDB7C37851987C7C132275 /* build:WallpaperSetupView.swift */ = { isa = PBXBuildFile; fileRef = DDEB7C3416986E013F256BCE /* ref:WallpaperSetupView.swift */; };
+		9BE0526874A4438AD093D279 /* ref:WallpaperRenderer.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WallpaperRenderer.swift"; sourceTree = "<group>"; };
+		9C7CA6F32CA643EF0707D174 /* ref:BackgroundPhotoEditor.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BackgroundPhotoEditor.swift"; sourceTree = "<group>"; };
+		9F1CE45F7D8A7C19F33DD9D2 /* ref:CanvasArtworkView.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CanvasArtworkView.swift"; sourceTree = "<group>"; };
+		A0AD9CEC41780F670929E69C /* phase:widget:resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A1DF302D802A8E3E0657EAD7 /* ref:RevisionHistory.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RevisionHistory.swift"; sourceTree = "<group>"; };
+		A25E2B887E5DC134279B904B /* ref:PairingView.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PairingView.swift"; sourceTree = "<group>"; };
+		A4C80477431259D93FE11E57 /* dependency:widget */ = { isa = PBXTargetDependency; target = A5A0AA9F4FB5BC8D9254438A /* target:widget */; targetProxy = 0DD22CB6C2E8E29B0AF6C12D /* proxy:widget */; };
+		A5A0AA9F4FB5BC8D9254438A /* target:widget */ = { isa = PBXNativeTarget; buildConfigurationList = 0F2F9B54D12A43C3DA590081 /* configlist:widget */; buildPhases = (85B53C7A615CCE39E04693F3 /* phase:widget:sources */, C86C06E737A2123D76E2FABB /* phase:widget:frameworks */, A0AD9CEC41780F670929E69C /* phase:widget:resources */, ); buildRules = (); dependencies = (); name = CoupleDrawWidget; productName = CoupleDrawWidget; productReference = 4C47665D1BA4105DF9684DC4 /* product:widget */; productType = "com.apple.product-type.app-extension"; };
+		A6B1F6BC339FE3193FC2117B /* ref:CameraCapture.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CameraCapture.swift"; sourceTree = "<group>"; };
+		A9012353AFD6A66EB75D4BE2 /* group:Sources */ = { isa = PBXGroup; children = (9C7CA6F32CA643EF0707D174 /* ref:BackgroundPhotoEditor.swift */, 64D766ED4C38C6DEA9C36D7D /* ref:BackgroundPhotoLayout.swift */, A6B1F6BC339FE3193FC2117B /* ref:CameraCapture.swift */, 9F1CE45F7D8A7C19F33DD9D2 /* ref:CanvasArtworkView.swift */, C6837C3A84276A744B1EC1EC /* ref:CanvasModels.swift */, 91E3D8D7435B6C8286647CEA /* ref:CanvasStore.swift */, 28CAA9296B2FF68D89891B8D /* ref:CoupleDrawApp.swift */, D8F222EE9775EECFBC460973 /* ref:DrawingSurface.swift */, B36321DEB52A32583D3BB8C1 /* ref:EditorView.swift */, 212A75CCB3E28839108D0881 /* ref:FullScreenCanvasView.swift */, 22D70554499E1F652FD3F895 /* ref:LatestWallpaperIntent.swift */, F69417827A36EF2F289E27CF /* ref:PairSync.swift */, A25E2B887E5DC134279B904B /* ref:PairingView.swift */, 51643CA4A5C466217339A4FA /* ref:PartnerTargetView.swift */, BC297892E4EF9D3471D8F22E /* ref:PushAppDelegate.swift */, A1DF302D802A8E3E0657EAD7 /* ref:RevisionHistory.swift */, D13E3E38FD2B4DE76647EB76 /* ref:SharedWhiteboard.swift */, 9BE0526874A4438AD093D279 /* ref:WallpaperRenderer.swift */, DDEB7C3416986E013F256BCE /* ref:WallpaperSetupView.swift */, ); path = "Sources"; sourceTree = "<group>"; };
+		B081DE93265478A96AE4EFCB /* WidgetInfo.plist */ = { isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = WidgetInfo.plist; sourceTree = "<group>"; };
+		B36321DEB52A32583D3BB8C1 /* ref:EditorView.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "EditorView.swift"; sourceTree = "<group>"; };
+		B4343C19535B18410503AED7 /* config:tests:Release */ = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.example.CoupleDrawTests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CoupleDraw.app/CoupleDraw"; BUNDLE_LOADER = "$(TEST_HOST)"; }; name = Release; };
+		B6537B19DC1E87E33A1C0817 /* build:CanvasModels.swift */ = { isa = PBXBuildFile; fileRef = C6837C3A84276A744B1EC1EC /* ref:CanvasModels.swift */; };
+		B6CDB6E5D160E013280D3C68 /* product:app */ = { isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CoupleDraw.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B6F43314D0693B2B792DAE17 /* phase:tests:sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (7C7FCE01A37DEBF39F9AF361 /* build:CanvasStoreTests.swift */, FA700B5F4A26BE2FBF81A308 /* build:SharedWhiteboardTests.swift */, ); runOnlyForDeploymentPostprocessing = 0; };
+		BC297892E4EF9D3471D8F22E /* ref:PushAppDelegate.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PushAppDelegate.swift"; sourceTree = "<group>"; };
+		C28076E89F8919C007B58A18 /* build:BackgroundPhotoLayout.swift */ = { isa = PBXBuildFile; fileRef = 64D766ED4C38C6DEA9C36D7D /* ref:BackgroundPhotoLayout.swift */; };
+		C6837C3A84276A744B1EC1EC /* ref:CanvasModels.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CanvasModels.swift"; sourceTree = "<group>"; };
+		C86C06E737A2123D76E2FABB /* phase:widget:frameworks */ = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		D13E3E38FD2B4DE76647EB76 /* ref:SharedWhiteboard.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SharedWhiteboard.swift"; sourceTree = "<group>"; };
+		D39A96DA174D592EB1E130ED /* build:CanvasArtworkView.swift */ = { isa = PBXBuildFile; fileRef = 9F1CE45F7D8A7C19F33DD9D2 /* ref:CanvasArtworkView.swift */; };
+		D644B645716E0C5C135AB7C3 /* PushDevelopment.entitlements */ = { isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PushDevelopment.entitlements; sourceTree = "<group>"; };
+		D8F222EE9775EECFBC460973 /* ref:DrawingSurface.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DrawingSurface.swift"; sourceTree = "<group>"; };
+		DDEB7C3416986E013F256BCE /* ref:WallpaperSetupView.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WallpaperSetupView.swift"; sourceTree = "<group>"; };
+		DDF05173B376DE398B5EAD82 /* group:Widget */ = { isa = PBXGroup; children = (32FACB7970DBCB70972B2FBB /* ref:CoupleDrawOpenWidget.swift */, ); path = "Widget"; sourceTree = "<group>"; };
+		DF114FB61E8D05A0D9C84887 /* build:PairingView.swift */ = { isa = PBXBuildFile; fileRef = A25E2B887E5DC134279B904B /* ref:PairingView.swift */; };
+		DF891E785808226D241F246E /* group:root */ = { isa = PBXGroup; children = (A9012353AFD6A66EB75D4BE2 /* group:Sources */, E3E43A9590E8EF36FE4ABC44 /* group:Assets */, DDF05173B376DE398B5EAD82 /* group:Widget */, 156052F04525D0F710673CF0 /* group:Tests */, 5619E268CFFE28118C19FC6A /* group:Config */, 8EC9A00BFD09B3190AC6B222 /* README.md */, 5151B46607EBC8890D8DFCC2 /* group:Products */, ); sourceTree = "<group>"; };
+		E02A90D9643568EA39115CFB /* product:tests */ = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CoupleDrawTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E2657B9FA91DD4A55652006F /* config:tests:Debug */ = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.example.CoupleDrawTests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CoupleDraw.app/CoupleDraw"; BUNDLE_LOADER = "$(TEST_HOST)"; }; name = Debug; };
+		E28FAD8F60ECDED9B4AD087A /* phase:app:resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (222F0DBFFE5EB23DCD3FD16F /* build:Assets.xcassets */, ); runOnlyForDeploymentPostprocessing = 0; };
+		E3E43A9590E8EF36FE4ABC44 /* group:Assets */ = { isa = PBXGroup; children = (5B04B2273026590A440D27C9 /* ref:Assets.xcassets */, ); sourceTree = "<group>"; };
+		F001BC2AF9EB5498B3360756 /* phase:app:frameworks */ = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		F115AF690239BFBFCB7B4DE6 /* phase:tests:frameworks */ = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		F4B7E5BA8E58CF01A465BB80 /* config:widget:Debug */ = { isa = XCBuildConfiguration; buildSettings = { APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = Config/WidgetInfo.plist; PRODUCT_BUNDLE_IDENTIFIER = com.example.CoupleDraw.Widget; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; }; name = Debug; };
+		F525DC24A8DA9798629E8E3E /* build:FullScreenCanvasView.swift */ = { isa = PBXBuildFile; fileRef = 212A75CCB3E28839108D0881 /* ref:FullScreenCanvasView.swift */; };
+		F59E8266325E0BAF0758C1B1 /* dependency:tests */ = { isa = PBXTargetDependency; target = 29C7B681C8D62CBAC94D51C0 /* target:app */; targetProxy = 2B4D2F8BFE54E9562F422278 /* proxy:tests */; };
+		F5E0E4512969530383AB07F0 /* ref:CanvasStoreTests.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CanvasStoreTests.swift"; sourceTree = "<group>"; };
+		F69417827A36EF2F289E27CF /* ref:PairSync.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PairSync.swift"; sourceTree = "<group>"; };
+		FA700B5F4A26BE2FBF81A308 /* build:SharedWhiteboardTests.swift */ = { isa = PBXBuildFile; fileRef = 1988D44075226FAA20DB7B37 /* ref:SharedWhiteboardTests.swift */; };
+		FC1D4C0F5C7E077279D96F62 /* build:PartnerTargetView.swift */ = { isa = PBXBuildFile; fileRef = 51643CA4A5C466217339A4FA /* ref:PartnerTargetView.swift */; };
+		FDD4F6179B3A2A11055053F2 /* PushProduction.entitlements */ = { isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PushProduction.entitlements; sourceTree = "<group>"; };
 	};
-	rootObject = 98F54143AB4E86B28C3AFEE0 /* Project object */;
+	rootObject = 98F54143AB4E86B28C3AFEE0 /* project */;
 }
