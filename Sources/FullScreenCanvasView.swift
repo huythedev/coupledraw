@@ -6,12 +6,13 @@ import SwiftUI
 struct FullScreenCanvasView: View {
     @EnvironmentObject private var store: CanvasStore
     @EnvironmentObject private var sync: PairSync
-    @Environment(\.dismiss) private var dismiss
     let slot: CanvasSlot
+    @Binding var isPresented: Bool
     @Binding var tool: DrawingTool
     @Binding var inkColor: Color
     @Binding var size: Double
     @State private var canvasView: PKCanvasView?
+    @State private var canvasGeneration = UUID()
     @State private var showClearConfirmation = false
     @State private var showPhotoEditor = false
     @State private var viewport: CanvasViewport?
@@ -34,7 +35,10 @@ struct FullScreenCanvasView: View {
                 }
                 .accessibilityLabel(shared ? "Clear all shared strokes" : "Clear drawing")
                 .buttonStyle(.bordered)
-                Button("Done") { dismiss() }.fontWeight(.semibold)
+                Button("Done") {
+                    finishEditing()
+                    isPresented = false
+                }.fontWeight(.semibold)
             }
             .padding(.horizontal)
             .padding(.vertical, 10)
@@ -46,6 +50,7 @@ struct FullScreenCanvasView: View {
                     .padding(.horizontal).padding(.bottom, 6)
             }
             GeometryReader { geometry in
+                let generation = canvasGeneration
                 let drawingSize = record.drawingSize
                 let fit = min(geometry.size.width / drawingSize.width,
                               geometry.size.height / drawingSize.height)
@@ -60,6 +65,7 @@ struct FullScreenCanvasView: View {
                                        with: UITraitCollection(userInterfaceStyle: .light)),
                                    width: size,
                                    onChange: { data in
+                                       guard generation == canvasGeneration else { return }
                                        if shared {
                                            store.whiteboard?.drawingChanged(data)
                                            sync.scheduleSharedDraft(store: store)
@@ -67,17 +73,27 @@ struct FullScreenCanvasView: View {
                                            store.updateDrawing(data, on: slot)
                                            sync.markDirty(slot)
                                        }
-                                   }, onReady: { canvasView = $0 },
-                                   onViewportChange: { viewport = $0 },
+                                   }, onReady: { view in
+                                       guard generation == canvasGeneration else { return }
+                                       canvasView = view
+                                   },
+                                   onViewportChange: { value in
+                                       guard generation == canvasGeneration else { return }
+                                       viewport = value
+                                   },
                                    collaborative: shared,
-                                   onToolBegin: { if shared { store.whiteboard?.beginEditing() } },
+                                   onToolBegin: {
+                                       guard generation == canvasGeneration else { return }
+                                       if shared { store.whiteboard?.beginEditing() }
+                                   },
                                    onToolEnd: { data in
+                                       guard generation == canvasGeneration else { return }
                                        if shared {
                                            store.whiteboard?.endEditing(data)
                                            sync.scheduleSharedDraft(store: store)
                                        }
                                    })
-                    .id("\(record.canvasID.uuidString)-\(record.drawingHeight)-\(shared)")
+                    .id("\(record.canvasID.uuidString)-\(record.drawingHeight)-\(shared)-\(generation)")
                 }
                 .frame(width: drawingSize.width * fit, height: drawingSize.height * fit)
                 .overlay(RoundedRectangle(cornerRadius: 2).stroke(.gray, lineWidth: 1))
@@ -177,12 +193,7 @@ struct FullScreenCanvasView: View {
             .background(Color(uiColor: .systemBackground))
         }
         .background(Color(uiColor: .systemBackground))
-        .onDisappear {
-            if shared, let canvasView, store.whiteboard?.isEditing == true {
-                store.whiteboard?.endEditing(canvasView.drawing.dataRepresentation())
-                sync.scheduleSharedDraft(store: store)
-            }
-        }
+        .onDisappear { finishEditing() }
         .sheet(isPresented: $showPhotoEditor) {
             BackgroundPhotoEditor(slot: slot)
                 .environmentObject(store).environmentObject(sync)
@@ -192,12 +203,18 @@ struct FullScreenCanvasView: View {
                             isPresented: $showClearConfirmation) {
             Button(shared ? "Clear all strokes" : "Clear drawing", role: .destructive) {
                 if shared {
+                    // Finish an in-flight stroke before clearing so a late tool callback
+                    // cannot restore the old drawing after the board has been emptied.
+                    finishEditing()
                     store.whiteboard?.clear()
                     sync.scheduleSharedDraft(store: store)
                 } else {
                     store.clearCurrentDrawing(on: slot)
                     sync.markDirty(slot)
                 }
+                canvasView = nil
+                viewport = nil
+                canvasGeneration = UUID()
             }
         } message: {
             Text(shared ? "This clears all strokes from the shared board on both phones. The background and saved History remain. You can Undo this while no one has changed those strokes." :
@@ -209,6 +226,13 @@ struct FullScreenCanvasView: View {
         )) {
             Button("OK") { store.errorMessage = nil }
         } message: { Text(store.errorMessage ?? "Unknown error") }
+    }
+
+    private func finishEditing() {
+        if shared, let canvasView, store.whiteboard?.isEditing == true {
+            store.whiteboard?.endEditing(canvasView.drawing.dataRepresentation())
+            sync.scheduleSharedDraft(store: store)
+        }
     }
 
     private func setBackground(_ hex: String) {
