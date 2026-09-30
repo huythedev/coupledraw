@@ -631,7 +631,7 @@ def serve(db_path, host, port, media_dir=None):
                     if not isinstance(sticker, dict) or set(sticker) != {"id", "data", "centerX", "centerY", "width", "rotation"}:
                         raise ValueError("Invalid sticker")
                     ident = sticker["id"]
-                    if not isinstance(ident, str) or not re.fullmatch(r"[0-9A-Fa-f-]{36}", ident) or ident.lower() in sticker_ids:
+                    if not isinstance(ident, str) or not re.fullmatch(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}", ident) or ident.lower() in sticker_ids:
                         raise ValueError("Invalid sticker ID")
                     sticker_ids.add(ident.lower())
                     image = base64.b64decode(sticker["data"], validate=True)

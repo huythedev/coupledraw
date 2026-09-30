@@ -239,6 +239,7 @@ class WhiteboardHTTPTests(unittest.TestCase):
             stored = json.loads(db.execute("SELECT body FROM snapshots").fetchone()[0])
         self.assertNotIn("data", stored["stickers"][0])
         for invalid in [dict(sticker, width=-1), dict(sticker, rotation=float("nan")),
+                        dict(sticker, id="-" * 36),
                         dict(sticker, data=base64.b64encode(b"not-an-image").decode())]:
             self.assertEqual(self.apply_art("a", 1, stickers=[invalid])[0], 400)
         self.assertEqual(self.request("GET", "/v1/state", role="B")[1]["items"], [saved])
@@ -251,6 +252,23 @@ class WhiteboardHTTPTests(unittest.TestCase):
         status, state, _ = self.request("GET", "/v1/state", role="B",
                                         headers={"X-CoupleDraw-Snapshots": "a:1"})
         self.assertEqual((status, state["items"]), (200, []))
+
+    def test_compact_reclaims_orphans_and_preserves_custom_media_directory(self):
+        self.processes[0].terminate(); self.processes[0].wait(timeout=5)
+        directory = str(Path(self.temp.name) / "private-media")
+        media = server.MediaFiles(self.db_path, directory)
+        body = {"source": "a", "revision": 1, "author": "A", "backgroundHex": "#000000",
+                "backgroundPhoto": self.photo("retained"), "drawingData": "", "drawingHeight": 844}
+        stored = media.store(body)
+        orphan = media.store({"backgroundPhoto": self.photo("orphan")})["backgroundPhoto"]["mediaID"]
+        with server.connect(self.db_path) as db:
+            db.execute("INSERT INTO snapshots VALUES (?, ?, ?, ?)", ("pair", "a", 1, json.dumps(stored)))
+        result = subprocess.run([sys.executable, str(Path(server.__file__)), "compact", "--db", self.db_path,
+                                 "--media-dir", directory], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(media.path(orphan).exists())
+        with server.connect(self.db_path) as db:
+            self.assertEqual(media.restore(json.loads(db.execute("SELECT body FROM snapshots").fetchone()[0])), body)
 
 
 if __name__ == "__main__":

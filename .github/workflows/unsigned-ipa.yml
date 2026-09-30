@@ -14,8 +14,13 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
       - name: Test server
-        run: python3 -m unittest discover -s server -v
+        run: python3 -m unittest discover -s server -v -f
 
       - name: Test iOS models
         shell: bash
