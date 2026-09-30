@@ -1,0 +1,58 @@
+name: CoupleDraw
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: '17.0'
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    TARGETED_DEVICE_FAMILY: '1'
+    CODE_SIGN_STYLE: Automatic
+targets:
+  CoupleDraw:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Assets.xcassets
+    dependencies:
+      - target: CoupleDrawWidget
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.CoupleDraw
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: CoupleDraw
+        ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: Config/Info.plist
+      properties:
+        NSCameraUsageDescription: Take a photo to use as your drawing background and share it with your partner when you Apply.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.example.CoupleDraw
+            CFBundleURLSchemes: [coupledraw]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIRequiresFullScreen: true
+  CoupleDrawTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: CoupleDraw
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.CoupleDrawTests
+  CoupleDrawWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Widget
+    info:
+      path: Config/WidgetInfo.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.CoupleDraw.Widget
+        APPLICATION_EXTENSION_API_ONLY: YES

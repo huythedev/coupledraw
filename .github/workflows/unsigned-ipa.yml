@@ -1,0 +1,31 @@
+name: Build unsigned IPA
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build unsigned IPA
+        run: sh tools/build-unsigned-ipa-on-mac.sh
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/CoupleDraw-unsigned.ipa
+          archive: false
+          if-no-files-found: error
+
+      - name: Publish unsigned IPA to GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/CoupleDraw-unsigned.ipa --verify-tag --generate-notes

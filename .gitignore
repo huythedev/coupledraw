@@ -1,0 +1,4 @@
+.DS_Store
+coupledraw.sqlite3
+build/
+dist/
