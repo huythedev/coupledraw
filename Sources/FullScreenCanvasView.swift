@@ -173,8 +173,6 @@ struct FullScreenCanvasView: View {
                         Label("Photo", systemImage: "photo")
                     }
                     .buttonStyle(.bordered)
-                    PasteStickerControl(onPaste: pasteImages).frame(width: 110, height: 40)
-                        .allowsHitTesting(!isPasting)
                     if isPasting { ProgressView().accessibilityLabel("Opening copied image") }
                     Spacer(minLength: 0)
                     Button("Fit") {
