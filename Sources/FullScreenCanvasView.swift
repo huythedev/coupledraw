@@ -1,5 +1,6 @@
 import PencilKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// A large editing workspace for the selected editable canvas. Changes are
 /// saved through the same CanvasStore as the compact preview.
@@ -17,6 +18,7 @@ struct FullScreenCanvasView: View {
     @State private var showPhotoEditor = false
     @State private var showStickerEditor = false
     @State private var viewport: CanvasViewport?
+    @State private var isPasting = false
 
     private var record: CanvasRecord { store.displayedRecord(slot) }
     private var shared: Bool { slot == .together && store.whiteboard != nil }
@@ -93,11 +95,16 @@ struct FullScreenCanvasView: View {
                                            store.whiteboard?.endEditing(data)
                                            sync.scheduleSharedDraft(store: store)
                                        }
-                                   })
+                                   }, onPasteImages: pasteImages)
                     .id("\(record.canvasID.uuidString)-\(record.drawingHeight)-\(shared)-\(generation)")
                     ZoomedStickerArtwork(stickers: record.stickers, viewport: viewport)
                 }
                 .frame(width: drawingSize.width * fit, height: drawingSize.height * fit)
+                .onDrop(of: [UTType.image.identifier], isTargeted: nil) { providers in
+                    guard providers.contains(where: StickerImages.canLoad) else { return false }
+                    pasteImages(providers)
+                    return true
+                }
                 .overlay(RoundedRectangle(cornerRadius: 2).stroke(.gray, lineWidth: 1))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -111,26 +118,30 @@ struct FullScreenCanvasView: View {
             }
 
             VStack(spacing: 12) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(DrawingTool.allCases) { option in
-                            Button { tool = option } label: {
-                                VStack(spacing: 4) {
-                                    Image(systemName: option.symbol).font(.title3)
-                                    Text(option.label).font(.caption2.weight(.medium))
-                                }
-                                .frame(minWidth: 62)
-                                .padding(.vertical, 8)
-                                .foregroundStyle(option == tool ? Color.white : Color.primary)
-                                .background(option == tool ? Color.accentColor : Color(uiColor: .secondarySystemGroupedBackground),
-                                            in: RoundedRectangle(cornerRadius: 12))
+                HStack(spacing: 8) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(DrawingTool.allCases.filter { $0 != .lasso }) { option in
+                                toolButton(option)
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityAddTraits(option == tool ? .isSelected : [])
                         }
                     }
-                    .padding(.horizontal)
+                    // Keep these two entries visible even on a narrow phone.
+                    toolButton(.lasso)
+                    Button(action: openStickers) {
+                        VStack(spacing: 4) {
+                            Image(systemName: "face.smiling").font(.title3)
+                            Text("Stickers").font(.caption2.weight(.medium))
+                        }
+                        .frame(width: 62).padding(.vertical, 8)
+                        .foregroundStyle(Color.primary)
+                        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                                    in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Edit stickers")
                 }
+                .padding(.horizontal)
 
                 HStack(spacing: 12) {
                     if tool.isInk {
@@ -166,10 +177,9 @@ struct FullScreenCanvasView: View {
                         Label("Photo", systemImage: "photo")
                     }
                     .buttonStyle(.bordered)
-                    Button { finishEditing(); showStickerEditor = true } label: {
-                        Label("Stickers", systemImage: "face.smiling")
-                    }
-                    .buttonStyle(.bordered)
+                    PasteStickerControl(onPaste: pasteImages).frame(width: 110, height: 40)
+                        .allowsHitTesting(!isPasting)
+                    if isPasting { ProgressView().accessibilityLabel("Opening copied image") }
                     Spacer(minLength: 0)
                     Button("Fit") {
                         if let canvasView {
@@ -208,7 +218,7 @@ struct FullScreenCanvasView: View {
             BackgroundPhotoEditor(slot: slot)
                 .environmentObject(store).environmentObject(sync)
         }
-        .sheet(isPresented: $showStickerEditor) {
+        .sheet(isPresented: $showStickerEditor, onDismiss: { canvasView?.becomeFirstResponder() }) {
             StickerEditor(slot: slot)
                 .environmentObject(store).environmentObject(sync)
         }
@@ -234,7 +244,7 @@ struct FullScreenCanvasView: View {
             Text(shared ? "This clears all strokes from the shared board on both phones. The background and saved History remain. You can Undo this while no one has changed those strokes." :
                  "This clears the current editable drawing on this phone. The background and saved History remain. Tap Apply to share the empty drawing.")
         }
-        .alert("Could not save", isPresented: Binding(
+        .alert("Could not update drawing", isPresented: Binding(
             get: { store.errorMessage != nil },
             set: { if !$0 { store.errorMessage = nil } }
         )) {
@@ -246,6 +256,44 @@ struct FullScreenCanvasView: View {
         if shared, let canvasView, store.whiteboard?.isEditing == true {
             store.whiteboard?.endEditing(canvasView.drawing.dataRepresentation())
             sync.scheduleSharedDraft(store: store)
+        }
+    }
+
+    private func toolButton(_ option: DrawingTool) -> some View {
+        Button { tool = option } label: {
+            VStack(spacing: 4) {
+                Image(systemName: option.symbol).font(.title3)
+                Text(option.label).font(.caption2.weight(.medium))
+            }
+            .frame(width: 62).padding(.vertical, 8)
+            .foregroundStyle(option == tool ? Color.white : Color.primary)
+            .background(option == tool ? Color.accentColor : Color(uiColor: .secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(option == tool ? .isSelected : [])
+    }
+
+    private func openStickers() {
+        finishEditing()
+        canvasView?.resignFirstResponder()
+        showStickerEditor = true
+    }
+
+    private func pasteImages(_ providers: [NSItemProvider]) {
+        guard !isPasting else { return }
+        finishEditing()
+        isPasting = true
+        StickerImages.load(providers) { result in
+            isPasting = false
+            do {
+                let image = try result.get()
+                let stickers = try StickerImages.adding(image, to: store.record(slot).stickers)
+                store.updateStickers(stickers, on: slot)
+                guard store.record(slot).stickers == stickers else { return }
+                sync.markDirty(slot)
+                openStickers()
+            } catch { store.errorMessage = error.localizedDescription }
         }
     }
 

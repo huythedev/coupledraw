@@ -20,16 +20,58 @@ enum StickerImages {
         throw CocoaError(.fileReadTooLarge)
     }
 
-    static func load(_ provider: NSItemProvider, completion: @escaping (UIImage) -> Void) {
-        if provider.canLoadObject(ofClass: UIImage.self) {
-            provider.loadObject(ofClass: UIImage.self) { object, _ in
-                if let image = object as? UIImage { DispatchQueue.main.async { completion(image) } }
-            }
-        } else if let type = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true }) {
-            provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
-                if let data, let image = UIImage(data: data) { DispatchQueue.main.async { completion(image) } }
+    enum ImportError: LocalizedError {
+        case noImage, unreadableImage, canvasFull
+        var errorDescription: String? {
+            switch self {
+            case .noImage: return "Copy the image itself, then tap Paste. Text and image links cannot be used as stickers."
+            case .unreadableImage: return "The copied image could not be opened. Try copying it again, or import it from Photos or Files."
+            case .canvasFull: return "Remove a sticker before adding another. This canvas can hold up to 12 stickers within its image limit."
             }
         }
+    }
+
+    static func canLoad(_ provider: NSItemProvider) -> Bool {
+        provider.canLoadObject(ofClass: UIImage.self) ||
+            provider.registeredTypeIdentifiers.contains { UTType($0)?.conforms(to: .image) == true }
+    }
+
+    static func load(_ providers: [NSItemProvider], completion: @escaping (Result<UIImage, Error>) -> Void) {
+        // A copied item may offer text first, or an object representation that
+        // fails even though its PNG/JPEG representation is usable. Try both.
+        let images = providers.filter(canLoad)
+        func finish(_ result: Result<UIImage, Error>) {
+            DispatchQueue.main.async { completion(result) }
+        }
+        guard !images.isEmpty else { finish(.failure(ImportError.noImage)); return }
+        func tryProvider(_ index: Int) {
+            guard index < images.count else { finish(.failure(ImportError.unreadableImage)); return }
+            let provider = images[index]
+            let types = provider.registeredTypeIdentifiers.filter { UTType($0)?.conforms(to: .image) == true }
+            func tryData(_ typeIndex: Int) {
+                guard typeIndex < types.count else { tryProvider(index + 1); return }
+                provider.loadDataRepresentation(forTypeIdentifier: types[typeIndex]) { data, _ in
+                    if let data, let image = UIImage(data: data) { finish(.success(image)) }
+                    else { tryData(typeIndex + 1) }
+                }
+            }
+            if provider.canLoadObject(ofClass: UIImage.self) {
+                provider.loadObject(ofClass: UIImage.self) { object, _ in
+                    if let image = object as? UIImage { finish(.success(image)) }
+                    else { tryData(0) }
+                }
+            } else { tryData(0) }
+        }
+        tryProvider(0)
+    }
+
+    static func adding(_ image: UIImage, to stickers: [CanvasSticker]) throws -> [CanvasSticker] {
+        guard stickers.count < 12 else { throw ImportError.canvasFull }
+        let sticker = CanvasSticker(data: try prepare(image))
+        guard stickers.reduce(sticker.data.count, { $0 + $1.data.count }) <= 1_500_000 else {
+            throw ImportError.canvasFull
+        }
+        return stickers + [sticker]
     }
 
     static func rect(_ sticker: CanvasSticker, imageSize: CGSize, canvas: CGSize) -> CGRect {
@@ -117,8 +159,8 @@ struct StickerEditor: View {
                     .clipped()
                     .overlay(Rectangle().stroke(.gray, lineWidth: 1))
                     .onDrop(of: [UTType.image.identifier], isTargeted: nil) { providers in
-                        guard let provider = providers.first else { return false }
-                        StickerImages.load(provider, completion: add)
+                        guard providers.contains(where: StickerImages.canLoad) else { return false }
+                        StickerImages.load(providers, completion: receive)
                         return true
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -160,7 +202,8 @@ struct StickerEditor: View {
                 }
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
-                        PasteStickerControl(onImage: add).frame(width: 110, height: 40)
+                        PasteStickerControl(onPaste: { StickerImages.load($0, completion: receive) })
+                            .frame(width: 110, height: 40)
                         PhotosPicker(selection: $pickedPhoto, matching: .images) {
                             Label("Photos", systemImage: "photo")
                         }
@@ -206,13 +249,16 @@ struct StickerEditor: View {
 
     private func add(_ image: UIImage) {
         do {
-            let sticker = CanvasSticker(data: try StickerImages.prepare(image))
-            guard stickers.count < 12, stickers.reduce(sticker.data.count, { $0 + $1.data.count }) <= 1_500_000 else {
-                message = "Remove a sticker before adding another. This canvas can hold up to 12 stickers within its image limit."
-                return
-            }
-            stickers.append(sticker); selection = sticker.id; save()
-        } catch { message = "This image could not be prepared. Try a smaller image." }
+            stickers = try StickerImages.adding(image, to: stickers)
+            selection = stickers.last?.id
+            save()
+        } catch { message = error.localizedDescription }
+    }
+    private func receive(_ result: Result<UIImage, Error>) {
+        switch result {
+        case .success(let image): add(image)
+        case .failure(let error): message = error.localizedDescription
+        }
     }
     private func update(_ sticker: CanvasSticker) {
         guard let index = stickers.firstIndex(where: { $0.id == sticker.id }) else { return }
@@ -266,28 +312,33 @@ private struct StickerTransform {
     var angle = Angle.zero
 }
 
-private struct PasteStickerControl: UIViewRepresentable {
-    let onImage: (UIImage) -> Void
-    func makeUIView(context: Context) -> StickerPasteReceiver { StickerPasteReceiver(onImage: onImage) }
-    func updateUIView(_ uiView: StickerPasteReceiver, context: Context) { uiView.onImage = onImage }
+struct PasteStickerControl: UIViewRepresentable {
+    let onPaste: ([NSItemProvider]) -> Void
+    func makeUIView(context: Context) -> StickerPasteReceiver { StickerPasteReceiver(onPaste: onPaste) }
+    func updateUIView(_ uiView: StickerPasteReceiver, context: Context) { uiView.onPaste = onPaste }
 }
 
-private final class StickerPasteReceiver: UIView {
-    var onImage: (UIImage) -> Void
-    init(onImage: @escaping (UIImage) -> Void) {
-        self.onImage = onImage
+final class StickerPasteReceiver: UIView {
+    var onPaste: ([NSItemProvider]) -> Void
+    init(onPaste: @escaping ([NSItemProvider]) -> Void) {
+        self.onPaste = onPaste
         super.init(frame: .zero)
-        pasteConfiguration = UIPasteConfiguration(forAccepting: UIImage.self)
+        pasteConfiguration = UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.image.identifier])
         let control = UIPasteControl()
         control.target = self
         control.translatesAutoresizingMaskIntoConstraints = false
         addSubview(control)
-        NSLayoutConstraint.activate([control.centerXAnchor.constraint(equalTo: centerXAnchor),
-                                     control.centerYAnchor.constraint(equalTo: centerYAnchor)])
+        NSLayoutConstraint.activate([control.leadingAnchor.constraint(equalTo: leadingAnchor),
+                                     control.trailingAnchor.constraint(equalTo: trailingAnchor),
+                                     control.topAnchor.constraint(equalTo: topAnchor),
+                                     control.bottomAnchor.constraint(equalTo: bottomAnchor)])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func canPaste(_ itemProviders: [NSItemProvider]) -> Bool {
+        itemProviders.contains(where: StickerImages.canLoad)
+    }
     override func paste(itemProviders: [NSItemProvider]) {
-        if let provider = itemProviders.first { StickerImages.load(provider, completion: onImage) }
+        onPaste(itemProviders)
     }
 }
 

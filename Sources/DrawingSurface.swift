@@ -10,6 +10,33 @@ final class FittedCanvasView: PKCanvasView {
     var collaborative = false
     override var undoManager: UndoManager? { collaborative ? nil : super.undoManager }
 
+    var onPasteImages: (([NSItemProvider]) -> Void)?
+
+    override func canPaste(_ itemProviders: [NSItemProvider]) -> Bool {
+        if onPasteImages != nil, itemProviders.contains(where: StickerImages.canLoad) { return true }
+        return super.canPaste(itemProviders)
+    }
+
+    override func paste(itemProviders: [NSItemProvider]) {
+        if let onPasteImages, itemProviders.contains(where: StickerImages.canLoad) {
+            onPasteImages(itemProviders)
+        } else { super.paste(itemProviders: itemProviders) }
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)), onPasteImages != nil, UIPasteboard.general.hasImages { return true }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    override func paste(_ sender: Any?) {
+        // Keep PencilKit's native stroke paste when the clipboard isn't an image.
+        if super.canPerformAction(#selector(paste(_:)), withSender: sender) {
+            super.paste(sender)
+        } else if let onPasteImages, UIPasteboard.general.hasImages {
+            onPasteImages(UIPasteboard.general.itemProviders)
+        } else { super.paste(sender) }
+    }
+
     var drawingAreaSize: CGSize = .zero {
         didSet {
             guard drawingAreaSize != oldValue else { return }
@@ -90,6 +117,7 @@ struct DrawingSurface: UIViewRepresentable {
     var collaborative = false
     var onToolBegin: (() -> Void)? = nil
     var onToolEnd: ((Data) -> Void)? = nil
+    var onPasteImages: (([NSItemProvider]) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
 
@@ -99,6 +127,7 @@ struct DrawingSurface: UIViewRepresentable {
         // Wallpaper backgrounds and shared ink colors must look the same on both phones.
         view.overrideUserInterfaceStyle = .light
         view.collaborative = collaborative
+        view.onPasteImages = onPasteImages
         view.backgroundColor = .clear
         view.isOpaque = false
         view.drawingPolicy = .anyInput
@@ -116,6 +145,7 @@ struct DrawingSurface: UIViewRepresentable {
         context.coordinator.applyTool(to: view, tool: tool, color: color, width: width)
         DispatchQueue.main.async {
             onReady(view)
+            view.becomeFirstResponder()
             context.coordinator.reportViewport(view)
         }
         return view
@@ -124,6 +154,7 @@ struct DrawingSurface: UIViewRepresentable {
     func updateUIView(_ view: PKCanvasView, context: Context) {
         (view as? FittedCanvasView)?.drawingAreaSize = drawingSize
         (view as? FittedCanvasView)?.collaborative = collaborative
+        (view as? FittedCanvasView)?.onPasteImages = onPasteImages
         context.coordinator.onChange = onChange
         context.coordinator.onToolBegin = onToolBegin
         context.coordinator.onToolEnd = onToolEnd
