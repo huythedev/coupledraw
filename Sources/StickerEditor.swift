@@ -209,8 +209,6 @@ struct StickerEditor: View {
                 }
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
-                        PasteStickerControl(onPaste: { StickerImages.load($0, completion: receive) })
-                            .frame(width: 110, height: 40)
                         PhotosPicker(selection: $pickedPhoto, matching: .images) {
                             Label("Photos", systemImage: "photo")
                         }
