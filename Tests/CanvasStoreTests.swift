@@ -395,7 +395,8 @@ import UIKit
             do {
                 let loaded = try result.get()
                 XCTAssertTrue(Thread.isMainThread)
-                XCTAssertEqual(loaded.size, image.size)
+                XCTAssertEqual(loaded.cgImage?.width, image.cgImage?.width)
+                XCTAssertEqual(loaded.cgImage?.height, image.cgImage?.height)
             } catch { XCTFail(error.localizedDescription) }
             ready.fulfill()
         }
