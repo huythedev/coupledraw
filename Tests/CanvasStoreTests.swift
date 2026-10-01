@@ -454,6 +454,14 @@ import UIKit
         XCTAssertEqual(received, 2)
 
         let canvas = FittedCanvasView()
+        canvas.drawingAreaSize = CGSize(width: 390, height: 844)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 640))
+        let controller = UIViewController()
+        controller.view = canvas
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        canvas.becomeFirstResponder()
+        defer { canvas.resignFirstResponder(); window.isHidden = true }
         canvas.onPasteImages = { _ in received += 1 }
         XCTAssertTrue(canvas.canPaste([provider]))
         canvas.paste(itemProviders: [provider])

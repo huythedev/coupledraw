@@ -52,7 +52,14 @@ enum StickerImages {
                 guard typeIndex < types.count else { tryProvider(index + 1); return }
                 provider.loadDataRepresentation(forTypeIdentifier: types[typeIndex]) { data, _ in
                     if let data, let image = UIImage(data: data) { finish(.success(image)) }
-                    else { tryData(typeIndex + 1) }
+                    else {
+                        provider.loadFileRepresentation(forTypeIdentifier: types[typeIndex]) { url, _ in
+                            // Item-provider file URLs expire after this callback.
+                            if let url, let data = try? Data(contentsOf: url), let image = UIImage(data: data) {
+                                finish(.success(image))
+                            } else { tryData(typeIndex + 1) }
+                        }
+                    }
                 }
             }
             if provider.canLoadObject(ofClass: UIImage.self) {
