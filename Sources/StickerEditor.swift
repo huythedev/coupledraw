@@ -141,6 +141,7 @@ struct StickerEditor: View {
     @State private var showKeyboard = false
     @State private var showFiles = false
     @State private var message = ""
+    @State private var isPasting = false
     private var record: CanvasRecord { store.displayedRecord(slot) }
 
     var body: some View {
@@ -222,7 +223,15 @@ struct StickerEditor: View {
             .padding(.vertical, 12)
             .navigationTitle("Stickers")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { Button("Done") { dismiss() } }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Paste image", action: pasteImage)
+                        .disabled(isPasting)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
             .onAppear { stickers = record.stickers; selection = stickers.last?.id }
             .onChange(of: pickedPhoto) { _, item in
                 Task {
@@ -249,6 +258,15 @@ struct StickerEditor: View {
             .alert("Could not add sticker", isPresented: Binding(
                 get: { !message.isEmpty }, set: { if !$0 { message = "" } }
             )) { Button("OK") { message = "" } } message: { Text(message) }
+        }
+    }
+
+    private func pasteImage() {
+        guard !isPasting else { return }
+        isPasting = true
+        StickerImages.load(UIPasteboard.general.itemProviders) { result in
+            isPasting = false
+            receive(result)
         }
     }
 
@@ -315,36 +333,6 @@ private struct StickerTransform {
     var translation = CGSize.zero
     var scale: CGFloat = 1
     var angle = Angle.zero
-}
-
-struct PasteStickerControl: UIViewRepresentable {
-    let onPaste: ([NSItemProvider]) -> Void
-    func makeUIView(context: Context) -> StickerPasteReceiver { StickerPasteReceiver(onPaste: onPaste) }
-    func updateUIView(_ uiView: StickerPasteReceiver, context: Context) { uiView.onPaste = onPaste }
-}
-
-final class StickerPasteReceiver: UIView {
-    var onPaste: ([NSItemProvider]) -> Void
-    init(onPaste: @escaping ([NSItemProvider]) -> Void) {
-        self.onPaste = onPaste
-        super.init(frame: .zero)
-        pasteConfiguration = UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.image.identifier])
-        let control = UIPasteControl()
-        control.target = self
-        control.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(control)
-        NSLayoutConstraint.activate([control.leadingAnchor.constraint(equalTo: leadingAnchor),
-                                     control.trailingAnchor.constraint(equalTo: trailingAnchor),
-                                     control.topAnchor.constraint(equalTo: topAnchor),
-                                     control.bottomAnchor.constraint(equalTo: bottomAnchor)])
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func canPaste(_ itemProviders: [NSItemProvider]) -> Bool {
-        itemProviders.contains(where: StickerImages.canLoad)
-    }
-    override func paste(itemProviders: [NSItemProvider]) {
-        onPaste(itemProviders)
-    }
 }
 
 private struct KeyboardStickerPanel: View {

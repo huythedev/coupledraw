@@ -442,16 +442,10 @@ import UIKit
         await fulfillment(of: [noImage, unreadable], timeout: 10)
     }
 
-    func testPasteControlAndDrawingCanvasAcceptImageProvidersAndNativePaste() {
+    func testDrawingCanvasAcceptImageProvidersAndNativePaste() {
         let image = UIGraphicsImageRenderer(size: CGSize(width: 5, height: 5)).image { _ in }
         let provider = NSItemProvider(object: image)
-        let text = NSItemProvider(object: "caption" as NSString)
         var received = 0
-        let receiver = StickerPasteReceiver { providers in received += providers.count }
-        XCTAssertFalse(receiver.canPaste([text]))
-        XCTAssertTrue(receiver.canPaste([text, provider]))
-        receiver.paste(itemProviders: [text, provider])
-        XCTAssertEqual(received, 2)
 
         let canvas = FittedCanvasView()
         canvas.drawingAreaSize = CGSize(width: 390, height: 844)
@@ -465,7 +459,7 @@ import UIKit
         canvas.onPasteImages = { _ in received += 1 }
         XCTAssertTrue(canvas.canPaste([provider]))
         canvas.paste(itemProviders: [provider])
-        XCTAssertEqual(received, 3)
+        XCTAssertEqual(received, 1)
 
         let clipboard = UIPasteboard.general
         let previous = clipboard.items
@@ -473,7 +467,7 @@ import UIKit
         clipboard.image = image
         XCTAssertTrue(canvas.canPerformAction(#selector(canvas.paste(_:)), withSender: nil))
         canvas.paste(nil)
-        XCTAssertEqual(received, 4)
+        XCTAssertEqual(received, 2)
         XCTAssertNotNil(canvas.inputView) // image paste keeps the lasso keyboard suppressed
     }
 }
