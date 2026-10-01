@@ -118,30 +118,26 @@ struct FullScreenCanvasView: View {
             }
 
             VStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(DrawingTool.allCases.filter { $0 != .lasso }) { option in
-                                toolButton(option)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(DrawingTool.allCases) { option in
+                            toolButton(option)
+                        }
+                        Button(action: openStickers) {
+                            VStack(spacing: 4) {
+                                Image(systemName: "face.smiling").font(.title3)
+                                Text("Stickers").font(.caption2.weight(.medium))
                             }
+                            .frame(width: 62).padding(.vertical, 8)
+                            .foregroundStyle(Color.primary)
+                            .background(Color(uiColor: .secondarySystemGroupedBackground),
+                                        in: RoundedRectangle(cornerRadius: 12))
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Edit stickers")
                     }
-                    // Keep these two entries visible even on a narrow phone.
-                    toolButton(.lasso)
-                    Button(action: openStickers) {
-                        VStack(spacing: 4) {
-                            Image(systemName: "face.smiling").font(.title3)
-                            Text("Stickers").font(.caption2.weight(.medium))
-                        }
-                        .frame(width: 62).padding(.vertical, 8)
-                        .foregroundStyle(Color.primary)
-                        .background(Color(uiColor: .secondarySystemGroupedBackground),
-                                    in: RoundedRectangle(cornerRadius: 12))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Edit stickers")
+                    .padding(.horizontal)
                 }
-                .padding(.horizontal)
 
                 HStack(spacing: 12) {
                     if tool.isInk {
