@@ -1,5 +1,6 @@
 import XCTest
 import PencilKit
+import UniformTypeIdentifiers
 import UIKit
 @testable import CoupleDraw
 
@@ -378,5 +379,101 @@ import UIKit
         let b = StickerImages.rect(sticker, imageSize: image.size, canvas: CGSize(width: 780, height: 1688))
         XCTAssertEqual(b.midX, a.midX * 2, accuracy: 0.001)
         XCTAssertEqual(b.width, a.width * 2, accuracy: 0.001)
+    }
+
+    func testImagePasteSkipsTextAndUnreadableClipboardItems() async throws {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 6)).image { context in
+            UIColor.green.setFill(); context.fill(CGRect(x: 0, y: 0, width: 8, height: 6))
+        }
+        let broken = NSItemProvider()
+        broken.registerDataRepresentation(forTypeIdentifier: UTType.png.identifier, visibility: .all) { done in
+            done(Data([1, 2, 3]), nil); return nil
+        }
+        let providers = [NSItemProvider(object: "Copied caption" as NSString), broken, NSItemProvider(object: image)]
+        let ready = expectation(description: "image copied after caption and broken image")
+        StickerImages.load(providers) { result in
+            do {
+                let loaded = try result.get()
+                XCTAssertTrue(Thread.isMainThread)
+                XCTAssertEqual(loaded.cgImage?.width, image.cgImage?.width)
+                XCTAssertEqual(loaded.cgImage?.height, image.cgImage?.height)
+            } catch { XCTFail(error.localizedDescription) }
+            ready.fulfill()
+        }
+        await fulfillment(of: [ready], timeout: 10)
+    }
+
+    func testImagePasteTriesAlternateDataRepresentation() async throws {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 9, height: 7)).image { _ in UIColor.blue.setFill() }
+        let png = try XCTUnwrap(image.pngData())
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.jpeg.identifier, visibility: .all) { done in
+            done(Data([0, 1]), nil); return nil
+        }
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.png.identifier, visibility: .all) { done in
+            done(png, nil); return nil
+        }
+        let ready = expectation(description: "usable PNG after broken JPEG")
+        StickerImages.load([provider]) { result in
+            do { XCTAssertEqual(try result.get().cgImage?.width, image.cgImage?.width) }
+            catch { XCTFail(error.localizedDescription) }
+            ready.fulfill()
+        }
+        await fulfillment(of: [ready], timeout: 10)
+    }
+
+    func testUnsupportedAndDamagedPastesReportFailure() async {
+        let noImage = expectation(description: "text reports copy-image guidance")
+        StickerImages.load([NSItemProvider(object: "https://example.com/picture.png" as NSString)]) { result in
+            guard case .failure(let error) = result else { XCTFail("Text must not become a sticker"); noImage.fulfill(); return }
+            XCTAssertEqual(error.localizedDescription, StickerImages.ImportError.noImage.localizedDescription)
+            noImage.fulfill()
+        }
+        let damaged = NSItemProvider()
+        damaged.registerDataRepresentation(forTypeIdentifier: UTType.png.identifier, visibility: .all) { done in
+            done(Data([1]), nil); return nil
+        }
+        let unreadable = expectation(description: "damaged image reports error")
+        StickerImages.load([damaged]) { result in
+            guard case .failure(let error) = result else { XCTFail("Damaged image must not be accepted"); unreadable.fulfill(); return }
+            XCTAssertEqual(error.localizedDescription, StickerImages.ImportError.unreadableImage.localizedDescription)
+            unreadable.fulfill()
+        }
+        await fulfillment(of: [noImage, unreadable], timeout: 10)
+    }
+
+    func testPasteControlAndDrawingCanvasAcceptImageProvidersAndNativePaste() {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 5, height: 5)).image { _ in }
+        let provider = NSItemProvider(object: image)
+        let text = NSItemProvider(object: "caption" as NSString)
+        var received = 0
+        let receiver = StickerPasteReceiver { providers in received += providers.count }
+        XCTAssertFalse(receiver.canPaste([text]))
+        XCTAssertTrue(receiver.canPaste([text, provider]))
+        receiver.paste(itemProviders: [text, provider])
+        XCTAssertEqual(received, 2)
+
+        let canvas = FittedCanvasView()
+        canvas.drawingAreaSize = CGSize(width: 390, height: 844)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 640))
+        let controller = UIViewController()
+        controller.view = canvas
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        canvas.becomeFirstResponder()
+        defer { canvas.resignFirstResponder(); window.isHidden = true }
+        canvas.onPasteImages = { _ in received += 1 }
+        XCTAssertTrue(canvas.canPaste([provider]))
+        canvas.paste(itemProviders: [provider])
+        XCTAssertEqual(received, 3)
+
+        let clipboard = UIPasteboard.general
+        let previous = clipboard.items
+        defer { clipboard.items = previous }
+        clipboard.image = image
+        XCTAssertTrue(canvas.canPerformAction(#selector(canvas.paste(_:)), withSender: nil))
+        canvas.paste(nil)
+        XCTAssertEqual(received, 4)
+        XCTAssertNotNil(canvas.inputView) // image paste keeps the lasso keyboard suppressed
     }
 }
