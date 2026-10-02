@@ -470,4 +470,224 @@ import UIKit
         XCTAssertEqual(received, 2)
         XCTAssertNotNil(canvas.inputView) // image paste keeps the lasso keyboard suppressed
     }
+
+    func testFailedRemoteCanvasWritePreservesHistoryAndCanBeRetried() throws {
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertNotNil(store.apply(.first))
+        let previousIDs = store.revisions.map(\.id)
+        let previousPartner = store.record(.second)
+        let blocked = root.appendingPathComponent("second.json")
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+        let remote = SyncedRevision(source: "b", revision: 1, author: "B", backgroundHex: "#123456",
+                                    backgroundPhoto: nil, drawingData: Data(), drawingHeight: 844)
+        XCTAssertThrowsError(try store.acceptRemote(remote, on: .second, localRole: "A"))
+        XCTAssertEqual(store.record(.second), previousPartner)
+        XCTAssertEqual(store.revisions.map(\.id), previousIDs)
+        XCTAssertEqual(CanvasStore(root: root).revisions.map(\.id), previousIDs)
+        try FileManager.default.removeItem(at: blocked)
+        try store.acceptRemote(remote, on: .second, localRole: "A")
+        XCTAssertEqual(CanvasStore(root: root).record(.second).backgroundHex, "#123456")
+        XCTAssertEqual(store.revisions.count, previousIDs.count + 1)
+    }
+
+    func testRendererRejectsUnsafeDimensionsBeforeAllocatingAnImage() throws {
+        var record = CanvasRecord(ownerID: UUID())
+        XCTAssertThrowsError(try WallpaperRenderer.render(record, pixels: CGSize(width: CGFloat.infinity, height: 844)))
+        XCTAssertThrowsError(try WallpaperRenderer.render(record, pixels: CGSize(width: 100_000, height: 844)))
+        record.drawingHeight = .infinity
+        XCTAssertThrowsError(try WallpaperRenderer.render(record))
+    }
+
+    func testDecodedImagesAreBoundedAndKeepTransparency() throws {
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = false
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 3000, height: 30), format: format).image { context in
+            UIColor.green.setFill(); context.fill(CGRect(x: 0, y: 0, width: 100, height: 30))
+        }
+        let decoded = try XCTUnwrap(BackgroundPhotoLayout.image(XCTUnwrap(image.pngData())))
+        XCTAssertLessThanOrEqual(try XCTUnwrap(decoded.cgImage).width, 2600)
+        XCTAssertTrue([CGImageAlphaInfo.premultipliedFirst, .premultipliedLast, .first, .last]
+            .contains(try XCTUnwrap(decoded.cgImage).alphaInfo))
+        XCTAssertNil(BackgroundPhotoLayout.image(Data([1, 2, 3])))
+        BackgroundPhotoLayout.clearImageCache()
+    }
+
+    private func isolatedSyncPreferences() -> () -> Void {
+        let keys = ["syncEndpoint", "syncVersions", "syncDirty", "partnerAlertsEnabled"]
+        let previous = keys.map { UserDefaults.standard.object(forKey: $0) }
+        keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
+        return {
+            for (key, value) in zip(keys, previous) {
+                if let value { UserDefaults.standard.set(value, forKey: key) }
+                else { UserDefaults.standard.removeObject(forKey: key) }
+            }
+        }
+    }
+
+    private func stateReply(_ request: URLRequest, role: String = "A", items: [SyncedRevision] = [],
+                            etag: String = "\"state\"", board: BoardUpdate? = nil) throws -> (Data, URLResponse) {
+        var state: [String: Any] = ["role": role, "items": try JSONSerialization.jsonObject(with: JSONEncoder().encode(items)),
+                                   "pushConfigured": false, "hasPartnerArt": !items.isEmpty,
+                                   "boardProtocol": 1, "mediaProtocol": 1, "drafts": []]
+        if let board { state["board"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(board)) }
+        return (try JSONSerialization.data(withJSONObject: state),
+                try XCTUnwrap(HTTPURLResponse(url: XCTUnwrap(request.url), statusCode: 200,
+                                            httpVersion: "HTTP/1.1", headerFields: ["ETag": etag])))
+    }
+
+    func testFailedRemoteRenderIsRetriedWithTheSameServerETag() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var phase = 0
+        var testToken = ""
+        let sync = PairSync(transport: { request in
+            if request.value(forHTTPHeaderField: "If-None-Match") == "\"partner-v1\"" {
+                return (Data(), try XCTUnwrap(HTTPURLResponse(url: XCTUnwrap(request.url), statusCode: 304,
+                                                            httpVersion: "HTTP/1.1", headerFields: nil)))
+            }
+            let remote = SyncedRevision(source: "b", revision: 1, author: "B", backgroundHex: "#123456",
+                                        backgroundPhoto: nil, drawingData: phase == 1 ? Data([1, 2, 3]) : Data(), drawingHeight: 844)
+            return try self.stateReply(request, items: phase == 0 ? [] : [remote],
+                                       etag: phase == 0 ? "\"initial\"" : "\"partner-v1\"")
+        }, readToken: { testToken }, writeToken: { testToken = $0 })
+        defer { sync.suspend() }
+        try await sync.configure(endpoint: "https://audit.invalid", token: "test-private-sync-token-A", store: store)
+        sync.stop()
+        phase = 1
+        await sync.refresh(store: store)
+        XCTAssertTrue(sync.status.hasPrefix("Sync paused:"))
+        XCTAssertTrue(store.revisions.isEmpty)
+        phase = 2
+        await sync.refresh(store: store)
+        XCTAssertEqual(store.record(.second).backgroundHex, "#123456")
+        XCTAssertEqual(store.revisions.count, 1)
+    }
+
+    func testDelayedPublishCannotModifyANewPairingSession() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let uploading = expectation(description: "publish waiting for response")
+        var reply: CheckedContinuation<(Data, URLResponse), Error>?
+        var testToken = ""
+        let sync = PairSync(transport: { request in
+            if request.httpMethod == "POST" {
+                return try await withCheckedThrowingContinuation { reply = $0; uploading.fulfill() }
+            }
+            return try self.stateReply(request, role: request.url?.host == "new-pair.invalid" ? "B" : "A")
+        }, readToken: { testToken }, writeToken: { testToken = $0 })
+        defer { sync.suspend() }
+        try await sync.configure(endpoint: "https://audit.invalid", token: "test-private-sync-token-A", store: store)
+        sync.stop()
+        sync.markDirty(.first)
+        let snapshot = store.record(.first)
+        let publishing = Task { await sync.publish(snapshot, slot: .first, store: store) }
+        await fulfillment(of: [uploading], timeout: 5)
+        try await sync.configure(endpoint: "https://new-pair.invalid", token: "test-private-sync-token-B", store: store)
+        sync.stop()
+        let newStatus = sync.status
+        let oldReply = SyncedRevision(source: "a", revision: 1, author: "A", backgroundHex: snapshot.backgroundHex,
+                                     backgroundPhoto: nil, drawingData: snapshot.drawingData, drawingHeight: snapshot.drawingHeight)
+        try XCTUnwrap(reply).resume(returning: (JSONEncoder().encode(oldReply),
+            XCTUnwrap(HTTPURLResponse(url: URL(string: "https://audit.invalid/v1/apply")!, statusCode: 200,
+                                     httpVersion: "HTTP/1.1", headerFields: nil))))
+        await publishing.value
+        XCTAssertEqual(sync.role, "B")
+        XCTAssertEqual(sync.status, newStatus)
+        XCTAssertNil(UserDefaults.standard.dictionary(forKey: "syncVersions")?[CanvasSlot.first.rawValue])
+        XCTAssertTrue(UserDefaults.standard.stringArray(forKey: "syncDirty")?.contains(CanvasSlot.first.rawValue) == true)
+    }
+
+    func testEditsMadeDuringPublishStayDirtyAndSurviveRefresh() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let uploading = expectation(description: "publish waiting for response")
+        var reply: CheckedContinuation<(Data, URLResponse), Error>?
+        var items: [SyncedRevision] = []
+        var testToken = ""
+        let sync = PairSync(transport: { request in
+            if request.httpMethod == "POST" {
+                return try await withCheckedThrowingContinuation { reply = $0; uploading.fulfill() }
+            }
+            return try self.stateReply(request, items: items)
+        }, readToken: { testToken }, writeToken: { testToken = $0 })
+        defer { sync.suspend() }
+        try await sync.configure(endpoint: "https://audit.invalid", token: "test-private-sync-token-A", store: store)
+        sync.stop()
+        sync.markDirty(.first)
+        let snapshot = store.record(.first)
+        let publishing = Task { await sync.publish(snapshot, slot: .first, store: store) }
+        await fulfillment(of: [uploading], timeout: 5)
+        store.updateBackground("#ABCDEF", on: .first)
+        sync.markDirty(.first)
+        let oldReply = SyncedRevision(source: "a", revision: 1, author: "A", backgroundHex: snapshot.backgroundHex,
+                                     backgroundPhoto: nil, drawingData: snapshot.drawingData, drawingHeight: snapshot.drawingHeight)
+        try XCTUnwrap(reply).resume(returning: (JSONEncoder().encode(oldReply),
+            XCTUnwrap(HTTPURLResponse(url: URL(string: "https://audit.invalid/v1/apply")!, statusCode: 200,
+                                     httpVersion: "HTTP/1.1", headerFields: nil))))
+        await publishing.value
+        XCTAssertTrue(UserDefaults.standard.stringArray(forKey: "syncDirty")?.contains(CanvasSlot.first.rawValue) == true)
+        items = [SyncedRevision(source: "a", revision: 2, author: "A", backgroundHex: snapshot.backgroundHex,
+                                backgroundPhoto: nil, drawingData: snapshot.drawingData, drawingHeight: snapshot.drawingHeight)]
+        await sync.refresh(store: store)
+        XCTAssertEqual(store.record(.first).backgroundHex, "#ABCDEF")
+    }
+
+    func testSyncRedirectPolicyRefusesCredentialForwarding() throws {
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let original = try XCTUnwrap(URL(string: "https://audit.invalid/v1/state"))
+        let task = session.dataTask(with: original)
+        let redirect = try XCTUnwrap(HTTPURLResponse(url: original, statusCode: 302,
+                                                   httpVersion: "HTTP/1.1", headerFields: nil))
+        var redirected = URLRequest(url: try XCTUnwrap(URL(string: "http://different.invalid/v1/state")))
+        redirected.setValue("Bearer test-private-token", forHTTPHeaderField: "Authorization")
+        var called = false
+        SyncRedirectPolicy().urlSession(session, task: task, willPerformHTTPRedirection: redirect,
+                                       newRequest: redirected) { next in
+            called = true
+            XCTAssertNil(next)
+        }
+        XCTAssertTrue(called)
+    }
+
+    func testSharedBackgroundEditedDuringApplyIsKeptAsAnUnpublishedDraft() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let uploading = expectation(description: "shared Apply waiting for response")
+        var reply: CheckedContinuation<(Data, URLResponse), Error>?
+        let board = BoardUpdate(revision: 1, baseRevision: nil, strokes: [], removed: [])
+        var testToken = ""
+        let sync = PairSync(transport: { request in
+            if request.httpMethod == "POST" {
+                return try await withCheckedThrowingContinuation { reply = $0; uploading.fulfill() }
+            }
+            return try self.stateReply(request, board: board)
+        }, readToken: { testToken }, writeToken: { testToken = $0 })
+        defer { sync.suspend() }
+        try await sync.configure(endpoint: "https://audit.invalid", token: "test-private-sync-token-A", store: store)
+        sync.stop()
+        let snapshot = store.displayedRecord(.together)
+        let applying = Task { await sync.applyWhiteboard(store: store) }
+        await fulfillment(of: [uploading], timeout: 5)
+        store.updateBackground("#ABCDEF", on: .together)
+        sync.markDirty(.together)
+        let applied = SyncedRevision(source: "together", revision: 1, author: "A", backgroundHex: snapshot.backgroundHex,
+                                     backgroundPhoto: nil, drawingData: snapshot.drawingData, drawingHeight: snapshot.drawingHeight)
+        try XCTUnwrap(reply).resume(returning: (JSONEncoder().encode(applied),
+            XCTUnwrap(HTTPURLResponse(url: URL(string: "https://audit.invalid/v1/apply")!, statusCode: 200,
+                                     httpVersion: "HTTP/1.1", headerFields: nil))))
+        let succeeded = await applying.value
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.record(.together).backgroundHex, "#ABCDEF")
+        XCTAssertEqual(store.revisions.first?.document.backgroundHex, snapshot.backgroundHex)
+        XCTAssertTrue(UserDefaults.standard.stringArray(forKey: "syncDirty")?.contains(CanvasSlot.together.rawValue) == true)
+    }
 }

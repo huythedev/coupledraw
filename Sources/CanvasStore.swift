@@ -305,7 +305,9 @@ import UIKit
     }
 
     private func rescaled(_ original: CanvasRecord, to size: WallpaperSize) throws -> CanvasRecord {
-        guard original.drawingHeight > 0 else { throw StoreError.invalidDrawingSize }
+        guard size.isValid, original.drawingHeight.isFinite, original.drawingHeight > 0 else {
+            throw StoreError.invalidDrawingSize
+        }
         var result = original
         let ratio = size.drawingHeight / original.drawingHeight
         result.drawingData = try scaledDrawing(original.drawingData, y: ratio)
@@ -457,19 +459,33 @@ import UIKit
         let revision = AppliedRevision(id: revisionID, canvasID: incoming.canvasID,
                                        authorID: remote.author == localRole ? pair.myUserID : pair.partnerUserID,
                                        createdAt: Date(), document: incoming, imageFilename: filename)
-        do {
-            try persist([revision] + revisions, to: root.appendingPathComponent("revisions.json"))
-            if slot == .together && keepSharedBase {
-                var base = record(.together)
-                if !keepSharedBackground {
-                    base.backgroundHex = incoming.backgroundHex
-                    base.backgroundPhoto = incoming.backgroundPhoto
-                    base.stickers = incoming.stickers
-                }
-                save(base, on: slot)
-            } else {
-                save(incoming, on: slot)
+        var nextRecord = incoming
+        if slot == .together && keepSharedBase {
+            nextRecord = record(.together)
+            if !keepSharedBackground {
+                nextRecord.backgroundHex = incoming.backgroundHex
+                nextRecord.backgroundPhoto = incoming.backgroundPhoto
+                nextRecord.stickers = incoming.stickers
             }
+        }
+        do {
+            try LocalMediaFiles.withLock(root: root) {
+                let historyURL = root.appendingPathComponent("revisions.json")
+                let previousHistory = try? Data(contentsOf: historyURL)
+                let recordData = try encoder.encode(nextRecord)
+                let historyData = try encoder.encode([revision] + revisions)
+                try historyData.write(to: historyURL, options: .atomic)
+                do {
+                    try recordData.write(to: root.appendingPathComponent("\(slot.rawValue).json"), options: .atomic)
+                } catch {
+                    // A failed canvas write must not be silently acknowledged.
+                    // Restore the prior History manifest before reporting failure.
+                    if let previousHistory { try? previousHistory.write(to: historyURL, options: .atomic) }
+                    else { try? FileManager.default.removeItem(at: historyURL) }
+                    throw error
+                }
+            }
+            records[slot] = nextRecord
             revisions.insert(revision, at: 0)
         } catch {
             try? FileManager.default.removeItem(at: url)

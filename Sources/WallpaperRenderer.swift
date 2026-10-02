@@ -9,15 +9,18 @@ enum WallpaperRenderer {
     }
 
     static func render(_ document: CanvasRecord, pixels: CGSize) throws -> UIImage {
-        guard pixels.width > 0, pixels.height > 0 else { throw RenderError.invalidSize }
+        guard pixels.width.isFinite, pixels.height.isFinite,
+              pixels.width > 0, pixels.height > 0, pixels.width <= 5000, pixels.height <= 10000 else {
+            throw RenderError.invalidSize
+        }
+        let designSize = document.drawingSize
+        guard designSize.height.isFinite, designSize.height > 0 else { throw RenderError.invalidSize }
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = true
         let renderer = UIGraphicsImageRenderer(size: pixels, format: format)
         let drawing = document.drawingData.isEmpty
             ? PKDrawing() : try PKDrawing(data: document.drawingData)
-        let designSize = document.drawingSize
-        guard designSize.height > 0 else { throw RenderError.invalidSize }
         let bounds = CGRect(origin: .zero, size: designSize)
         return renderer.image { context in
             UIColor(hex: document.backgroundHex).setFill()

@@ -10,7 +10,6 @@ import binascii
 import getpass
 import hashlib
 import json
-import math
 import os
 import re
 import secrets
@@ -34,6 +33,38 @@ state_changed = threading.Condition(lock)
 
 
 class SyncHTTPServer(ThreadingHTTPServer):
+    def __init__(self, server_address, handler, bind_and_activate=True, *,
+                 max_connections=64, request_timeout=45):
+        self.worker_slots = threading.BoundedSemaphore(max_connections)
+        self.request_timeout = request_timeout
+        super().__init__(server_address, handler, bind_and_activate)
+
+    def process_request(self, request, client_address):
+        if not self.worker_slots.acquire(blocking=False):
+            try:
+                request.settimeout(1)
+                request.sendall(b"HTTP/1.0 503 Service Unavailable\r\n"
+                                b"Content-Length: 0\r\nConnection: close\r\nRetry-After: 1\r\n\r\n")
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            # Longer than the maximum 25-second long poll, but bounded for
+            # clients that stop sending headers or the declared request body.
+            request.settimeout(self.request_timeout)
+            super().process_request(request, client_address)
+        except BaseException:
+            self.worker_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.worker_slots.release()
+
     def server_bind(self):
         # HTTPServer performs reverse DNS here, which can stall local startup.
         # This service does not use the resolved hostname.
@@ -160,6 +191,13 @@ class Database(sqlite3.Connection):
 
 
 def connect(path):
+    if str(path) != ":memory:":
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(descriptor)
     db = sqlite3.connect(path, timeout=10, factory=Database)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("CREATE TABLE IF NOT EXISTS members (token_hash TEXT PRIMARY KEY, pair_id TEXT NOT NULL, role TEXT NOT NULL)")
@@ -213,7 +251,7 @@ def valid_strokes(strokes):
             raise ValueError("Invalid stroke ID")
         ids.add(ident)
         if (not isinstance(data, str) or not 0 < len(base64.b64decode(data, validate=True)) <= MAX_BOARD_BYTES or
-                type(height) not in (int, float) or not math.isfinite(height) or not 300 <= height <= 2000):
+                type(height) not in (int, float) or not 300 <= height <= 2000):
             raise ValueError("Invalid stroke data")
     return strokes
 
@@ -381,6 +419,22 @@ def serve(db_path, host, port, media_dir=None):
             raise SystemExit(f"APNs setup incomplete: {error}") from error
 
     class Handler(BaseHTTPRequestHandler):
+        def read_json(self, limit):
+            lengths = self.headers.get_all("Content-Length", [])
+            if (self.headers.get("Transfer-Encoding") is not None or len(lengths) != 1 or
+                    not re.fullmatch(r"[0-9]{1,10}", lengths[0])):
+                raise ValueError("Invalid body framing")
+            size = int(lengths[0])
+            if not 0 < size <= limit:
+                raise ValueError("Invalid body size")
+            raw = self.rfile.read(size)
+            if len(raw) != size:
+                raise ValueError("Incomplete body")
+            try:
+                return json.loads(raw)
+            except RecursionError as error:
+                raise ValueError("JSON is nested too deeply") from error
+
         def begin_request(self):
             self.started_at = time.perf_counter()
             self.client_role = "-"
@@ -421,14 +475,14 @@ def serve(db_path, host, port, media_dir=None):
             # Older clients omit Prefer. Bound waits so a proxy can retry safely.
             preferences = [part.strip().lower() for part in self.headers.get("Prefer", "").split(",")]
             wait = next((int(part[5:]) for part in preferences
-                         if part.startswith("wait=") and part[5:].isdigit() and
+                         if re.fullmatch(r"wait=[0-9]{1,2}", part) and
                          1 <= int(part[5:]) <= 25), 0)
             deadline = time.monotonic() + wait
             def known_versions(header):
                 result = {}
                 for pair in self.headers.get(header, "").split(","):
                     key, separator, value = pair.partition(":")
-                    if separator and value.isdigit() and len(key) <= 16:
+                    if separator and re.fullmatch(r"[0-9]{1,19}", value) and len(key) <= 16:
                         result[key] = int(value)
                 return result
 
@@ -499,14 +553,11 @@ def serve(db_path, host, port, media_dir=None):
 
         def board_since(self):
             raw = self.headers.get("X-CoupleDraw-Board", "")
-            return int(raw) if raw.isdigit() and len(raw) < 12 else None
+            return int(raw) if re.fullmatch(r"[0-9]{1,11}", raw) else None
 
         def edit_board(self, member, seed=False):
             try:
-                size = int(self.headers.get("Content-Length", "0"))
-                if not 0 < size <= MAX_BODY:
-                    raise ValueError("Board request too large")
-                obj = json.loads(self.rfile.read(size))
+                obj = self.read_json(MAX_BODY)
                 if not isinstance(obj, dict):
                     raise ValueError("Invalid board request")
                 additions = valid_strokes(obj["strokes"] if seed else obj["add"])
@@ -579,10 +630,7 @@ def serve(db_path, host, port, media_dir=None):
                 return self.edit_board(member, seed=self.path.endswith("/seed"))
             if self.path == "/v1/device":
                 try:
-                    size = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < size <= 512:
-                        raise ValueError("Invalid body size")
-                    data = json.loads(self.rfile.read(size))
+                    data = self.read_json(512)
                     device_token = data["deviceToken"]
                     if not isinstance(device_token, str) or not re.fullmatch(r"[0-9a-f]{64,256}", device_token):
                         raise ValueError("Invalid device token")
@@ -594,14 +642,11 @@ def serve(db_path, host, port, media_dir=None):
                 return self.reply(200, {"registered": True, "pushConfigured": push_configured()})
             if self.path == "/v1/draft":
                 try:
-                    size = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < size <= 1_500_000:
-                        raise ValueError("Draft too large")
-                    obj = json.loads(self.rfile.read(size))
+                    obj = self.read_json(1_500_000)
                     data = obj["drawingData"]
                     height = obj["drawingHeight"]
                     if (not isinstance(data, str) or len(base64.b64decode(data, validate=True)) > 1_000_000 or
-                            type(height) not in (int, float) or not math.isfinite(height) or
+                            type(height) not in (int, float) or
                             not 300 <= height <= 2000):
                         raise ValueError("Invalid draft")
                 except (ValueError, KeyError, TypeError, binascii.Error, json.JSONDecodeError):
@@ -621,10 +666,7 @@ def serve(db_path, host, port, media_dir=None):
             if self.path != "/v1/apply":
                 return self.reply(404, {"error": "Not found"})
             try:
-                size = int(self.headers.get("Content-Length", "0"))
-                if not 0 < size <= MAX_BODY:
-                    raise ValueError("Drawing too large")
-                obj = json.loads(self.rfile.read(size))
+                obj = self.read_json(MAX_BODY)
                 source = obj["source"]
                 data = base64.b64decode(obj["drawingData"], validate=True)
                 expected = obj["expectedRevision"]
@@ -650,7 +692,7 @@ def serve(db_path, host, port, media_dir=None):
                     for key, minimum, maximum in (("centerX", -100, 100), ("centerY", -100, 100),
                                                   ("width", 0.01, 10), ("rotation", -360, 360)):
                         value = sticker[key]
-                        if type(value) not in (int, float) or not math.isfinite(value) or not minimum <= value <= maximum:
+                        if type(value) not in (int, float) or not minimum <= value <= maximum:
                             raise ValueError("Invalid sticker placement")
                 if sticker_bytes > 1_500_000:
                     raise ValueError("Stickers too large")
@@ -668,12 +710,12 @@ def serve(db_path, host, port, media_dir=None):
                     image = base64.b64decode(photo["data"], validate=True)
                     if len(image) > 900_000 or not image.startswith(b"\xff\xd8"):
                         raise ValueError("Invalid background photo data")
-                    if (type(photo["zoom"]) not in (int, float) or not math.isfinite(photo["zoom"]) or
+                    if (type(photo["zoom"]) not in (int, float) or
                             not 0.1 <= photo["zoom"] <= 5 or
-                            any(type(photo[k]) not in (int, float) or not math.isfinite(photo[k]) or
+                            any(type(photo[k]) not in (int, float) or
                                 not -100 <= photo[k] <= 100 for k in ("offsetX", "offsetY")) or
                             ("rotation" in photo and (type(photo["rotation"]) not in (int, float) or
-                             not math.isfinite(photo["rotation"]) or not -360 <= photo["rotation"] <= 360))):
+                             not -360 <= photo["rotation"] <= 360))):
                         raise ValueError("Invalid photo placement")
             except (ValueError, KeyError, TypeError, binascii.Error, json.JSONDecodeError):
                 return self.reply(400, {"error": "Invalid drawing request"})
