@@ -541,6 +541,7 @@ import UIKit
         let (store, root) = temporaryStore()
         defer { try? FileManager.default.removeItem(at: root) }
         var phase = 0
+        var testToken = ""
         let sync = PairSync(transport: { request in
             if request.value(forHTTPHeaderField: "If-None-Match") == "\"partner-v1\"" {
                 return (Data(), try XCTUnwrap(HTTPURLResponse(url: XCTUnwrap(request.url), statusCode: 304,
@@ -550,7 +551,7 @@ import UIKit
                                         backgroundPhoto: nil, drawingData: phase == 1 ? Data([1, 2, 3]) : Data(), drawingHeight: 844)
             return try self.stateReply(request, items: phase == 0 ? [] : [remote],
                                        etag: phase == 0 ? "\"initial\"" : "\"partner-v1\"")
-        })
+        }, readToken: { testToken }, writeToken: { testToken = $0 })
         defer { sync.suspend() }
         try await sync.configure(endpoint: "https://audit.invalid", token: "test-private-sync-token-A", store: store)
         sync.stop()
@@ -571,12 +572,13 @@ import UIKit
         defer { try? FileManager.default.removeItem(at: root) }
         let uploading = expectation(description: "publish waiting for response")
         var reply: CheckedContinuation<(Data, URLResponse), Error>?
+        var testToken = ""
         let sync = PairSync(transport: { request in
             if request.httpMethod == "POST" {
                 return try await withCheckedThrowingContinuation { reply = $0; uploading.fulfill() }
             }
             return try self.stateReply(request, role: request.url?.host == "new-pair.invalid" ? "B" : "A")
-        })
+        }, readToken: { testToken }, writeToken: { testToken = $0 })
         defer { sync.suspend() }
         try await sync.configure(endpoint: "https://audit.invalid", token: "test-private-sync-token-A", store: store)
         sync.stop()
@@ -607,12 +609,13 @@ import UIKit
         let uploading = expectation(description: "publish waiting for response")
         var reply: CheckedContinuation<(Data, URLResponse), Error>?
         var items: [SyncedRevision] = []
+        var testToken = ""
         let sync = PairSync(transport: { request in
             if request.httpMethod == "POST" {
                 return try await withCheckedThrowingContinuation { reply = $0; uploading.fulfill() }
             }
             return try self.stateReply(request, items: items)
-        })
+        }, readToken: { testToken }, writeToken: { testToken = $0 })
         defer { sync.suspend() }
         try await sync.configure(endpoint: "https://audit.invalid", token: "test-private-sync-token-A", store: store)
         sync.stop()
@@ -661,12 +664,13 @@ import UIKit
         let uploading = expectation(description: "shared Apply waiting for response")
         var reply: CheckedContinuation<(Data, URLResponse), Error>?
         let board = BoardUpdate(revision: 1, baseRevision: nil, strokes: [], removed: [])
+        var testToken = ""
         let sync = PairSync(transport: { request in
             if request.httpMethod == "POST" {
                 return try await withCheckedThrowingContinuation { reply = $0; uploading.fulfill() }
             }
             return try self.stateReply(request, board: board)
-        })
+        }, readToken: { testToken }, writeToken: { testToken = $0 })
         defer { sync.suspend() }
         try await sync.configure(endpoint: "https://audit.invalid", token: "test-private-sync-token-A", store: store)
         sync.stop()

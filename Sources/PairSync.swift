@@ -90,7 +90,7 @@ private enum SyncTransport {
     @Published private(set) var ntfyBaseURL: String?
     @Published var notificationsStatus = "Partner alerts are off"
     @Published private(set) var endpoint = UserDefaults.standard.string(forKey: "syncEndpoint") ?? ""
-    private var token: String { SecretStore.read() ?? "" }
+    private var token: String { readToken() ?? "" }
     private var versions: [CanvasSlot: Int] = {
         let saved = UserDefaults.standard.dictionary(forKey: "syncVersions") as? [String: Int] ?? [:]
         return Dictionary(uniqueKeysWithValues: saved.compactMap { entry in
@@ -115,9 +115,14 @@ private enum SyncTransport {
     private var draftTask: Task<Void, Never>?
     private var draftUploadFailed = false
     private let transport: (URLRequest) async throws -> (Data, URLResponse)
+    private let readToken: () -> String?
+    private let writeToken: (String) throws -> Void
 
-    init(transport: ((URLRequest) async throws -> (Data, URLResponse))? = nil) {
+    init(transport: ((URLRequest) async throws -> (Data, URLResponse))? = nil,
+         readToken: (() -> String?)? = nil, writeToken: ((String) throws -> Void)? = nil) {
         self.transport = transport ?? { try await SyncTransport.session.data(for: $0) }
+        self.readToken = readToken ?? { SecretStore.read() }
+        self.writeToken = writeToken ?? { try SecretStore.write($0) }
     }
 
     private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
@@ -191,7 +196,7 @@ private enum SyncTransport {
         endpoint = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let configuringSession = sessionID
         do {
-            try SecretStore.write(newToken)
+            try writeToken(newToken)
             guard let state = try await fetch(force: true) else { throw SyncError.response }
             guard state.role == "A" || state.role == "B" else { throw SyncError.response }
             if changedPair {
@@ -217,7 +222,7 @@ private enum SyncTransport {
             guard sessionID == configuringSession else { throw CancellationError() }
             sessionID = UUID()
             endpoint = oldEndpoint
-            try? SecretStore.write(oldToken)
+            try? writeToken(oldToken)
             UserDefaults.standard.set(oldEndpoint, forKey: "syncEndpoint")
             versions = oldVersions; dirty = oldDirty; role = oldRole
             persistState()
