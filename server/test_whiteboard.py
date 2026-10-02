@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import coupledraw_server as server
@@ -179,6 +180,45 @@ class WhiteboardHTTPTests(unittest.TestCase):
         self.assertEqual(self.edit("bad", [stroke("dup"), stroke("dup")])[0], 400)
         self.assertEqual(self.request("POST", "/v1/board/ops", {"id": "none", "add": [], "remove": []}, headers={"Authorization": "Bearer invalid"})[0], 401)
 
+    def test_oversized_numeric_headers_do_not_crash_state_requests(self):
+        for headers in [{"Prefer": "wait=" + "9" * 5000},
+                        {"X-CoupleDraw-Snapshots": "a:" + "9" * 5000},
+                        {"X-CoupleDraw-Drafts": "A:" + "9" * 5000},
+                        {"Prefer": "wait=²", "X-CoupleDraw-Board": "²"}]:
+            with self.subTest(headers=list(headers)):
+                self.assertEqual(self.request("GET", "/v1/state", headers=headers)[0], 200)
+
+    def test_extreme_numbers_and_deep_json_are_rejected_without_losing_art(self):
+        self.seed([stroke("retained")])
+        self.assertEqual(self.edit("huge", [dict(stroke("huge"), drawingHeight=10 ** 400)])[0], 400)
+        _, state, _ = self.request("GET", "/v1/state")
+        self.assertEqual(state["board"]["strokes"], [stroke("retained")])
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        try:
+            connection.request("POST", "/v1/apply", body="[" * 2000 + "0" + "]" * 2000,
+                               headers={"Authorization": "Bearer " + self.tokens["A"]})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
+        finally:
+            connection.close()
+        self.assertEqual(self.request("GET", "/v1/state")[0], 200)
+
+    def test_ambiguous_http_body_framing_is_rejected(self):
+        for extra in [("Transfer-Encoding", "chunked"), ("Content-Length", "2")]:
+            connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+            try:
+                connection.putrequest("POST", "/v1/device")
+                connection.putheader("Authorization", "Bearer " + self.tokens["A"])
+                connection.putheader("Content-Length", "2")
+                connection.putheader(*extra)
+                connection.endheaders(b"{}")
+                response = connection.getresponse()
+                self.assertEqual(response.status, 400)
+                response.read()
+            finally:
+                connection.close()
+
     def photo(self, content="photo"):
         return {"data": base64.b64encode(b"\xff\xd8" + content.encode()).decode(),
                 "zoom": 1, "offsetX": 0, "offsetY": 0, "rotation": 0}
@@ -269,6 +309,75 @@ class WhiteboardHTTPTests(unittest.TestCase):
         self.assertFalse(media.path(orphan).exists())
         with server.connect(self.db_path) as db:
             self.assertEqual(media.restore(json.loads(db.execute("SELECT body FROM snapshots").fetchone()[0])), body)
+
+
+class ServerResourceTests(unittest.TestCase):
+    def test_new_databases_are_private_and_existing_permissions_are_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "private.sqlite3"
+            with server.connect(path) as db:
+                db.execute("INSERT INTO settings VALUES ('test', 'value')")
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            path.chmod(0o640)
+            with server.connect(path) as db:
+                self.assertEqual(db.execute("SELECT value FROM settings WHERE key='test'").fetchone()[0], "value")
+            self.assertEqual(path.stat().st_mode & 0o777, 0o640)
+
+    def test_idle_connections_expire_and_overload_does_not_spawn_more_handlers(self):
+        started = threading.Event()
+        both_started = threading.Event()
+        count_lock = threading.Lock()
+        started_count = 0
+
+        class Handler(server.BaseHTTPRequestHandler):
+            def setup(self):
+                super().setup()
+                nonlocal started_count
+                with count_lock:
+                    started_count += 1
+                    started.set()
+                    if started_count == 2:
+                        both_started.set()
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        httpd = server.SyncHTTPServer(("127.0.0.1", 0), Handler, max_connections=2, request_timeout=0.5)
+        worker = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        worker.start()
+        try:
+            with socket.create_connection(httpd.server_address, timeout=2) as idle_a:
+                self.assertTrue(started.wait(2))
+                with socket.create_connection(httpd.server_address, timeout=2) as idle_b:
+                    self.assertTrue(both_started.wait(2))
+                    connection = http.client.HTTPConnection(*httpd.server_address, timeout=2)
+                    try:
+                        connection.request("GET", "/")
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, 503)
+                        response.read()
+                    finally:
+                        connection.close()
+                    self.assertEqual(started_count, 2)
+                    self.assertEqual(idle_a.recv(1), b"")
+                    self.assertEqual(idle_b.recv(1), b"")
+            connection = http.client.HTTPConnection(*httpd.server_address, timeout=2)
+            try:
+                connection.request("GET", "/")
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                response.read()
+            finally:
+                connection.close()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            worker.join(timeout=2)
 
 
 if __name__ == "__main__":

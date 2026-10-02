@@ -21,6 +21,10 @@ To supply your own secrets, run `python3 server/coupledraw_server.py create-pair
 
 Local HTTP exposes drawings and tokens to anyone able to observe that network. Use it only on trusted private Wi-Fi. For Internet access, use an HTTPS reverse proxy; never publicly forward port 8787.
 
+The service bounds concurrent connections to 64 and expires stalled socket I/O after 45 seconds, longer than its maximum 25-second long poll. Overload returns HTTP 503 with `Retry-After`; it does not change the syncing protocol. Request bodies have size limits and require one unambiguous Content-Length without Transfer-Encoding. Invalid numeric headers are ignored, and malformed or excessively nested JSON is rejected before changing artwork.
+
+New databases are created with owner-only permissions (`0600`); existing file permissions are preserved for compatibility. Keep an existing database, backups, and alert configuration private to the service user. App requests do not follow redirects: use the final HTTPS address in Pair and have the proxy serve `/v1/*` directly.
+
 ## Ubuntu VPS with HTTPS
 
 Copy the **entire** `server/coupledraw_server.py` to `~/coupledraw/coupledraw_server.py`. On the VPS:

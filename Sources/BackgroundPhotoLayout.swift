@@ -2,14 +2,30 @@ import ImageIO
 import SwiftUI
 
 enum BackgroundPhotoLayout {
-    private static let imageCache = NSCache<NSData, UIImage>()
+    private static let imageCache: NSCache<NSData, UIImage> = {
+        let cache = NSCache<NSData, UIImage>()
+        cache.countLimit = 24
+        cache.totalCostLimit = 48 * 1024 * 1024
+        return cache
+    }()
     static func clearImageCache() { imageCache.removeAllObjects() }
 
     static func image(_ data: Data) -> UIImage? {
         let key = data as NSData
         if let cached = imageCache.object(forKey: key) { return cached }
-        guard let decoded = UIImage(data: data) else { return nil }
-        imageCache.setObject(decoded, forKey: key)
+        guard let source = CGImageSourceCreateWithData(data as CFData,
+            [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        // App-imported backgrounds are already at most 2600 px. Apply the same
+        // bound to remote/legacy media before allocating a full decoded bitmap.
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 2600,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let bitmap = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        let decoded = UIImage(cgImage: bitmap)
+        imageCache.setObject(decoded, forKey: key, cost: bitmap.bytesPerRow * bitmap.height)
         return decoded
     }
 

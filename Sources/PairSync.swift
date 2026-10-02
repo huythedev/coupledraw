@@ -65,6 +65,22 @@ private struct PublishBody: Encodable {
 
 private struct ServerError: Decodable { let error: String }
 
+/// Authentication stays on the explicitly configured origin. A server/proxy
+/// redirect is reported as an error rather than forwarding a token or artwork.
+final class SyncRedirectPolicy: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
+private enum SyncTransport {
+    static let session = URLSession(configuration: .ephemeral,
+                                    delegate: SyncRedirectPolicy(), delegateQueue: nil)
+}
+
 @MainActor final class PairSync: ObservableObject {
     @Published private(set) var status = "Local only"
     @Published private(set) var role: String?
@@ -98,6 +114,26 @@ private struct ServerError: Decodable { let error: String }
     private var sessionID = UUID()
     private var draftTask: Task<Void, Never>?
     private var draftUploadFailed = false
+    private let transport: (URLRequest) async throws -> (Data, URLResponse)
+
+    init(transport: ((URLRequest) async throws -> (Data, URLResponse))? = nil) {
+        self.transport = transport ?? { try await SyncTransport.session.data(for: $0) }
+    }
+
+    private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        let session = sessionID
+        do {
+            let result = try await transport(request)
+            guard session == sessionID, !Task.isCancelled else { throw CancellationError() }
+            if let http = result.1 as? HTTPURLResponse, [301, 302, 303, 307, 308].contains(http.statusCode) {
+                throw SyncError.server("The server redirected this request. Enter its final address in Pair before syncing.")
+            }
+            return result
+        } catch {
+            guard session == sessionID, !Task.isCancelled else { throw CancellationError() }
+            throw error
+        }
+    }
 
     var configured: Bool { !endpoint.isEmpty && !token.isEmpty }
     /// Upgrades a token stored by earlier builds while the app is unlocked.
@@ -153,6 +189,7 @@ private struct ServerError: Decodable { let error: String }
             retryShortWait = false
         }
         endpoint = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let configuringSession = sessionID
         do {
             try SecretStore.write(newToken)
             guard let state = try await fetch(force: true) else { throw SyncError.response }
@@ -177,6 +214,7 @@ private struct ServerError: Decodable { let error: String }
             status = connectedStatus(for: state.role)
             start(store: store)
         } catch {
+            guard sessionID == configuringSession else { throw CancellationError() }
             sessionID = UUID()
             endpoint = oldEndpoint
             try? SecretStore.write(oldToken)
@@ -273,14 +311,15 @@ private struct ServerError: Decodable { let error: String }
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONEncoder().encode(DeviceRegistration(deviceToken: deviceToken))
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await send(request)
             guard let http = response as? HTTPURLResponse else { throw SyncError.response }
             guard http.statusCode == 200 else { throw serverError(data) }
             let result = try JSONDecoder().decode(DeviceRegistrationResult.self, from: data)
             pushConfigured = result.pushConfigured
             notificationsStatus = result.registered && result.pushConfigured ?
                 "Partner alerts enabled" : "APNs is not configured on the server."
-        } catch { notificationsStatus = "Could not register this phone for alerts: \(error.localizedDescription)" }
+        } catch is CancellationError { return }
+        catch { notificationsStatus = "Could not register this phone for alerts: \(error.localizedDescription)" }
     }
 
     func markDirty(_ slot: CanvasSlot) {
@@ -303,7 +342,7 @@ private struct ServerError: Decodable { let error: String }
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.setValue(String(board.revision), forHTTPHeaderField: "X-CoupleDraw-Board")
                     request.httpBody = try JSONEncoder().encode(patch)
-                    let (data, response) = try await URLSession.shared.data(for: request)
+                    let (data, response) = try await self.send(request)
                     guard !Task.isCancelled, self.sessionID == session else { break }
                     guard let http = response as? HTTPURLResponse else { throw SyncError.response }
                     if http.statusCode == 409,
@@ -320,7 +359,7 @@ private struct ServerError: Decodable { let error: String }
                     try board.receive(JSONDecoder().decode(BoardUpdate.self, from: data), acknowledging: patch.id)
                     self.draftUploadFailed = false
                 } catch {
-                    if Task.isCancelled { break }
+                    if Task.isCancelled || self.sessionID != session { break }
                     self.draftUploadFailed = true
                     self.status = "Edits saved on this phone · waiting to sync: \(error.localizedDescription)"
                     break
@@ -337,15 +376,19 @@ private struct ServerError: Decodable { let error: String }
         do {
             if let state = try await fetch(force: true) { try await incorporate(state, store: store) }
             return !board.hasPending
-        } catch { status = "Could not refresh the shared board: \(error.localizedDescription)"; return false }
+        } catch is CancellationError { return false }
+        catch { status = "Could not refresh the shared board: \(error.localizedDescription)"; return false }
     }
 
     /// The server checks the board version and commits one immutable revision.
     /// Save locally only after that commit, so an Apply toast means it really synced.
     func applyWhiteboard(store: CanvasStore) async -> Bool {
         guard configured, let role, let board = store.whiteboard else { return false }
+        let session = sessionID
         for _ in 0..<3 {
-            guard await flushSharedDraft(store: store) else {
+            let flushed = await flushSharedDraft(store: store)
+            guard session == sessionID, !Task.isCancelled else { return false }
+            guard flushed else {
                 store.errorMessage = "Your edits are saved on this phone. Reconnect before applying the shared board."
                 return false
             }
@@ -365,20 +408,25 @@ private struct ServerError: Decodable { let error: String }
                     backgroundHex: record.backgroundHex, backgroundPhoto: record.backgroundPhoto,
                     drawingData: record.drawingData, drawingHeight: record.drawingHeight,
                     stickers: record.stickers))
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (data, response) = try await send(request)
                 guard let http = response as? HTTPURLResponse else { throw SyncError.response }
                 if http.statusCode == 409 { continue }
                 guard http.statusCode == 200 else { throw serverError(data) }
                 let item = try JSONDecoder().decode(SyncedRevision.self, from: data)
+                let current = store.record(.together)
+                let unchangedBackground = current.backgroundHex == record.backgroundHex &&
+                    current.backgroundPhoto == record.backgroundPhoto && current.stickers == record.stickers
                 if item.revision > (versions[.together] ?? 0) {
-                    try store.acceptRemote(item, on: .together, localRole: role, keepSharedBase: true)
+                    try store.acceptRemote(item, on: .together, localRole: role, keepSharedBase: true,
+                                           keepSharedBackground: !unchangedBackground)
                     versions[.together] = item.revision
                 }
-                dirty.remove(.together)
+                if unchangedBackground { dirty.remove(.together) }
                 persistState()
                 status = "Our art saved for both phones · revision \(item.revision)"
                 return true
-            } catch {
+            } catch is CancellationError { return false }
+            catch {
                 store.errorMessage = "Apply could not be confirmed: \(error.localizedDescription). Reconnect and try again."
                 return false
             }
@@ -420,7 +468,7 @@ private struct ServerError: Decodable { let error: String }
             if status != message && !draftUploadFailed { status = message }
             scheduleSharedDraft(store: store)
         } catch {
-            if Task.isCancelled { return }
+            if Task.isCancelled || error is CancellationError { return }
             stateETag = nil
             knownSnapshotVersions = [:]
             knownDraftVersions = [:]
@@ -444,6 +492,7 @@ private struct ServerError: Decodable { let error: String }
     }
 
     private func incorporate(_ state: ServerState, store: CanvasStore) async throws {
+        let session = sessionID
         supportsStickerSync = state.mediaProtocol == 1
         if state.boardProtocol != 1 {
             throw SyncError.server("Update the Python server to this source version to enable the shared whiteboard.")
@@ -465,7 +514,7 @@ private struct ServerError: Decodable { let error: String }
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.httpBody = try JSONEncoder().encode(BoardSeed(seedTag: seedTag, strokes: strokes))
-                    let (data, response) = try await URLSession.shared.data(for: request)
+                    let (data, response) = try await send(request)
                     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                         // Fetch all legacy layers again on a concurrent migration.
                         stateETag = nil; knowsSharedBase = false; knownDraftVersions = [:]
@@ -481,24 +530,29 @@ private struct ServerError: Decodable { let error: String }
             hasPartnerArt = state.items.contains { slot(for: $0.source, role: state.role) == .second }
         }
         for item in state.items {
+            guard session == sessionID, !Task.isCancelled else { throw CancellationError() }
             guard let slot = slot(for: item.source, role: state.role) else { continue }
             let previous = versions[slot] ?? 0
             if item.revision > previous && (slot == .together && store.liveSharedEnabled || !dirty.contains(slot)) {
-                do {
-                    try store.acceptRemote(item, on: slot, localRole: state.role,
-                                           keepSharedBase: slot == .together && store.liveSharedEnabled,
-                                           keepSharedBackground: dirty.contains(.together))
-                    versions[slot] = item.revision
-                    persistState()
-                    if ntfyTopic == nil && (!pushCapable || !pushConfigured),
-                       item.author != state.role,
-                       UserDefaults.standard.bool(forKey: "partnerAlertsEnabled"),
-                       UIApplication.shared.applicationState == .active {
-                        await showLocalPartnerAlert(for: item)
-                    }
-                } catch { status = "Could not render remote drawing: \(error.localizedDescription)" }
+                try store.acceptRemote(item, on: slot, localRole: state.role,
+                                       keepSharedBase: slot == .together && store.liveSharedEnabled,
+                                       keepSharedBackground: dirty.contains(.together))
+                versions[slot] = item.revision
+                persistState()
+                if ntfyTopic == nil && (!pushCapable || !pushConfigured),
+                   item.author != state.role,
+                   UserDefaults.standard.bool(forKey: "partnerAlertsEnabled"),
+                   UIApplication.shared.applicationState == .active {
+                    await showLocalPartnerAlert(for: item)
+                }
             }
         }
+        guard session == sessionID, !Task.isCancelled else { throw CancellationError() }
+        // Only acknowledge payloads once decoding, rendering and disk writes
+        // succeeded. A failure must remain eligible for the next refresh.
+        for item in state.items { knownSnapshotVersions[item.source] = max(knownSnapshotVersions[item.source] ?? 0, item.revision) }
+        for draft in state.drafts ?? [] { knownDraftVersions[draft.role] = draft.revision }
+        if state.drafts != nil { knowsSharedBase = true }
     }
 
     private func showLocalPartnerAlert(for item: SyncedRevision) async {
@@ -534,7 +588,7 @@ private struct ServerError: Decodable { let error: String }
                 backgroundHex: record.backgroundHex, backgroundPhoto: record.backgroundPhoto,
                 drawingData: record.drawingData,
                 drawingHeight: record.drawingHeight, stickers: record.stickers))
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await send(request)
             guard let http = response as? HTTPURLResponse else { throw SyncError.response }
             if http.statusCode == 409 {
                 status = "Edit conflict on \(slot.rawValue). Your local drawing is safe; ask your partner to pause, then resolve before publishing."
@@ -542,16 +596,19 @@ private struct ServerError: Decodable { let error: String }
             }
             guard http.statusCode == 200 else { throw serverError(data) }
             let item = try JSONDecoder().decode(SyncedRevision.self, from: data)
-            versions[slot] = item.revision
+            versions[slot] = max(versions[slot] ?? 0, item.revision)
             if item.backgroundPhoto != record.backgroundPhoto {
                 persistState()
                 status = "Saved locally; update the Python server to sync photo backgrounds."
                 return
             }
-            dirty.remove(slot)
+            let unchanged = store.record(slot) == record
+            if unchanged { dirty.remove(slot) }
             persistState()
-            status = "Published \(slot.rawValue) · revision \(item.revision)"
-        } catch { status = "Saved locally; sync failed: \(error.localizedDescription)" }
+            status = unchanged ? "Published \(slot.rawValue) · revision \(item.revision)" :
+                "Published revision \(item.revision) · newer edits remain on this phone"
+        } catch is CancellationError { return }
+        catch { status = "Saved locally; sync failed: \(error.localizedDescription)" }
     }
 
     private func fetch(force: Bool = false, waitForChange: Bool = false) async throws -> ServerState? {
@@ -578,7 +635,7 @@ private struct ServerError: Decodable { let error: String }
             request.setValue("wait=\(longPollWaitSeconds)", forHTTPHeaderField: "Prefer")
             request.timeoutInterval = TimeInterval(longPollWaitSeconds + 15)
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await send(request)
         guard session == sessionID, !Task.isCancelled else { throw CancellationError() }
         guard let http = response as? HTTPURLResponse else { throw SyncError.response }
         if waitForChange {
@@ -595,15 +652,14 @@ private struct ServerError: Decodable { let error: String }
         }
         guard http.statusCode == 200 else { throw serverError(data) }
         let state = try JSONDecoder().decode(ServerState.self, from: data)
+        guard state.role == "A" || state.role == "B" else { throw SyncError.response }
         stateETag = http.value(forHTTPHeaderField: "ETag")
-        for item in state.items { knownSnapshotVersions[item.source] = max(knownSnapshotVersions[item.source] ?? 0, item.revision) }
-        for draft in state.drafts ?? [] { knownDraftVersions[draft.role] = draft.revision }
-        if state.drafts != nil { knowsSharedBase = true }
         return state
     }
 
     private func authorizedRequest(path: String) throws -> URLRequest {
-        guard let url = URL(string: endpoint + path) else { throw SyncError.configuration }
+        guard let base = URL(string: endpoint), Self.allowsServerURL(base),
+              let url = URL(string: endpoint + path) else { throw SyncError.configuration }
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

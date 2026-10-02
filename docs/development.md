@@ -24,6 +24,14 @@ In Our art, completed stroke operations are batched briefly and sent to the pair
 
 Foreground live updates require the app to remain active. A locked or suspended phone catches up when opened or when its Shortcut is invoked. There is no location-based background execution. Both phone apps and the server should be upgraded together for the shared whiteboard protocol.
 
+## Robustness and security checks
+
+Sync responses are ignored after a pairing change or foreground-session cancellation. Personal edits and shared background/sticker edits made while an Apply is uploading remain marked as unpublished. Remote snapshots are acknowledged only after rendering and local persistence succeed, so a failed render or disk write can be retried. Remote canvas writes report errors and restore the previous History manifest if the canvas write fails.
+
+Authenticated requests use a dedicated ephemeral URL session and refuse HTTP redirects; Pair must contain the final server origin. Image decoding is capped at the same 2600-pixel limit as background imports, and the decoded image cache has count and memory limits. The wallpaper renderer rejects non-finite and out-of-range image dimensions before allocating a bitmap.
+
+Regression tests cover delayed publish responses during re-pairing, editing during upload, retrying a failed render with the same ETag, failed canvas writes, bounded image decoding, malformed HTTP framing and extreme numeric headers/JSON, idle connection expiry, connection overload, and database file permissions. Existing drawing, sticker/paste, wallpaper rendering, media migration/pruning, and collaborative whiteboard tests remain in place.
+
 ## Practical limits
 
 This is a self-hosted prototype. No hosted pairing service, Apple signing identity, APNs key, or pre-installed Shortcut is supplied. iOS controls wallpaper changes; there is no public direct setter in this app and no guaranteed remote wallpaper automation. Shared editing sends completed strokes, moves, and erases, but does not stream a partner's in-progress pen tip or cursor. Verify notification triggers and wallpaper prompts on the iOS version and devices you intend to use.
