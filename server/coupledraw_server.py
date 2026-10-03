@@ -29,6 +29,7 @@ from urllib.request import Request, urlopen
 MAX_BODY = 8_000_000
 MAX_BOARD_BYTES = 3_000_000
 MAX_STROKES = 3000
+MAX_RELAY_IMAGES = 52  # Three latest canvases and the temporary legacy base.
 PAIRING_TTL = 300
 PAIRING_RECOVERY_TTL = 86400
 MAX_PAIRING_SESSIONS = 100
@@ -122,38 +123,76 @@ class MediaFiles:
             result["stickers"] = [self.store_image(item) for item in body["stickers"]]
         return result
 
-    def restore_image(self, item):
+    def restore_image(self, item, relay=False):
         if item is not None and "mediaID" in item:
-            image = self.path(item["mediaID"]).read_bytes()
+            result = dict(item) if relay else {key: value for key, value in item.items() if key != "mediaID"}
+            try:
+                image = self.path(item["mediaID"]).read_bytes()
+            except FileNotFoundError:
+                if relay:
+                    # A delivered original lives on the phones. Keep its hash
+                    # and placement so they can reuse it or request a resend.
+                    return result
+                raise
             if hashlib.sha256(image).hexdigest() != item["mediaID"]:
                 raise ValueError("Stored media is damaged")
-            result = {key: value for key, value in item.items() if key != "mediaID"}
             result["data"] = base64.b64encode(image).decode()
             return result
         return item
 
-    def restore(self, body):
+    def restore(self, body, relay=False):
         if body is None:
             return None
         result = dict(body)
-        result["backgroundPhoto"] = self.restore_image(body.get("backgroundPhoto"))
+        result["backgroundPhoto"] = self.restore_image(body.get("backgroundPhoto"), relay)
         if "stickers" in body:
-            result["stickers"] = [self.restore_image(item) for item in body["stickers"]]
+            result["stickers"] = [self.restore_image(item, relay) for item in body["stickers"]]
         return result
 
-    def prune(self, db):
-        # Call inside BEGIN IMMEDIATE. Readers hydrate files within the same
-        # SQLite lock, so an in-flight response cannot lose its referenced JPEG.
-        referenced = set()
-        for (raw,) in db.execute("SELECT body FROM snapshots UNION ALL SELECT body FROM shared_base"):
-            body = json.loads(raw) or {}
+    def references(self, db, pair_id=None):
+        result = {}
+        where = " WHERE pair_id=?" if pair_id is not None else ""
+        parameters = (pair_id,) if pair_id is not None else ()
+        rows = db.execute("SELECT pair_id, source, revision, body FROM snapshots" + where, parameters).fetchall()
+        rows += [(pair, "base", (json.loads(raw) or {}).get("revision", 0), raw)
+                 for pair, raw in db.execute("SELECT pair_id, body FROM shared_base" + where, parameters)]
+        for pair, source, revision, raw in rows:
+            body = json.loads(raw)
+            if body is None:
+                continue
+            identifiers = set()
             for item in [body.get("backgroundPhoto"), *body.get("stickers", [])]:
                 if item and "mediaID" in item:
-                    self.path(item["mediaID"])  # Validate before deleting anything.
-                    referenced.add(item["mediaID"])
+                    self.path(item["mediaID"])
+                    identifiers.add(item["mediaID"])
+            result[(pair, source, revision)] = identifiers
+        return result
+
+    @staticmethod
+    def changed(db, pair_id):
+        db.execute("INSERT INTO media_generation VALUES (?, 1) ON CONFLICT(pair_id) DO UPDATE SET revision=revision+1", (pair_id,))
+
+    def prune(self, db):
+        # BEGIN IMMEDIATE also serializes readers and other server processes.
+        # A shared hash is kept until EVERY pair/revision referencing it has
+        # receipts from both phones. HTTP delivery alone never grants a receipt.
+        references = self.references(db)
+        receipts = {(pair, source, revision, role) for pair, source, revision, role
+                    in db.execute("SELECT pair_id, source, revision, role FROM media_deliveries")}
+        needed = set()
+        for (pair, source, revision), identifiers in references.items():
+            if not all((pair, source, revision, role) in receipts for role in ("A", "B")):
+                needed.update(identifiers)
+        for pair, source, revision, role in receipts:
+            if (pair, source, revision) not in references:
+                db.execute("DELETE FROM media_deliveries WHERE pair_id=? AND source=? AND revision=? AND role=?",
+                           (pair, source, revision, role))
+        for pair, ident, role in db.execute("SELECT pair_id, media_id, role FROM media_requests").fetchall():
+            if not any(key[0] == pair and ident in ids for key, ids in references.items()):
+                db.execute("DELETE FROM media_requests WHERE pair_id=? AND media_id=? AND role=?", (pair, ident, role))
         removed = 0
         for file in self.root.glob("*.image"):
-            if re.fullmatch(r"[0-9a-f]{64}", file.stem) and file.stem not in referenced:
+            if re.fullmatch(r"[0-9a-f]{64}", file.stem) and file.stem not in needed:
                 removed += file.stat().st_size
                 file.unlink()
         return removed
@@ -216,6 +255,9 @@ def connect(path):
     db.execute("CREATE TABLE IF NOT EXISTS board_operations (pair_id TEXT NOT NULL, id TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(pair_id, id))")
     db.execute("CREATE TABLE IF NOT EXISTS pairing_sessions (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, creator_hash TEXT NOT NULL UNIQUE, joiner_hash TEXT UNIQUE, token_a_hash TEXT NOT NULL, expires_at INTEGER NOT NULL, recover_until INTEGER)")
     db.execute("CREATE TABLE IF NOT EXISTS pairing_limits (bucket TEXT NOT NULL, window INTEGER NOT NULL, hits INTEGER NOT NULL, PRIMARY KEY(bucket, window))")
+    db.execute("CREATE TABLE IF NOT EXISTS media_deliveries (pair_id TEXT NOT NULL, source TEXT NOT NULL, revision INTEGER NOT NULL, role TEXT NOT NULL, PRIMARY KEY(pair_id, source, revision, role))")
+    db.execute("CREATE TABLE IF NOT EXISTS media_requests (pair_id TEXT NOT NULL, media_id TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY(pair_id, media_id, role))")
+    db.execute("CREATE TABLE IF NOT EXISTS media_generation (pair_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)")
     db.commit()
     return db
 
@@ -627,6 +669,7 @@ def serve(db_path, host, port, media_dir=None):
 
             known_snapshots = known_versions("X-CoupleDraw-Snapshots")
             known_drafts = known_versions("X-CoupleDraw-Drafts")
+            relay = self.headers.get("X-CoupleDraw-Media") == "2"
             topic = recipient_topic(db_path, member[0], member[1]) if ntfy else None
             push = push_configured()
             with state_changed:
@@ -644,20 +687,27 @@ def serve(db_path, host, port, media_dir=None):
                                           (member[0],)).fetchall()
                         drafts = db.execute("SELECT role, revision, drawing_data, drawing_height FROM shared_drafts WHERE pair_id=? ORDER BY role",
                                             (member[0],)).fetchall()
+                        generation = db.execute("SELECT revision FROM media_generation WHERE pair_id=?", (member[0],)).fetchone()
+                        inventory = [{"source": source, "revision": revision, "mediaIDs": sorted(identifiers)}
+                                     for (_, source, revision), identifiers in media.references(db, member[0]).items()]
+                        requests = sorted({ident for ident, in db.execute(
+                            "SELECT media_id FROM media_requests WHERE pair_id=? AND role<>?", member)
+                                           if not media.path(ident).exists()}) if relay else []
                         marker = json.dumps([member[1], push, topic, ntfy,
                                          [(source, revision) for source, revision, _ in rows],
                                          [(role, revision) for role, revision, _, _ in drafts],
-                                         board["revision"] if board else None],
+                                         board["revision"] if board else None, relay,
+                                         generation[0] if generation else 0],
                                         separators=(",", ":")).encode()
                         etag = '"' + hashlib.sha256(marker).hexdigest()[:24] + '"'
                         remaining = deadline - time.monotonic()
                         if self.headers.get("If-None-Match") != etag:
                             try:
-                                changed_snapshots = [media.restore(json.loads(body)) for source, revision, body in rows
+                                changed_snapshots = [media.restore(json.loads(body), relay) for source, revision, body in rows
                                                      if known_snapshots.get(source) != revision]
-                                hydrated_base = None if self.headers.get("X-CoupleDraw-Base-Known") == "1" else media.restore(json.loads(base_row[0]))
+                                hydrated_base = None if self.headers.get("X-CoupleDraw-Base-Known") == "1" else media.restore(json.loads(base_row[0]), relay)
                             except (OSError, ValueError):
-                                return self.reply(503, {"error": "A stored photo is unavailable. Restore the server media backup or re-apply the photo from a phone."})
+                                return self.reply(503, {"error": "A stored photo is unavailable. Update CoupleDraw on both phones for temporary media delivery, or re-apply the photo from a phone."})
                     if self.headers.get("If-None-Match") != etag or remaining <= 0:
                         break
                     # Recheck SQLite periodically in case another server process
@@ -681,7 +731,9 @@ def serve(db_path, host, port, media_dir=None):
                                     "ntfyTopic": topic, "ntfyBaseURL": ntfy,
                                     "hasPartnerArt": any(source == partner_source for source, _, _ in rows),
                                     "items": changed_snapshots,
-                                    "mediaProtocol": 1,
+                                    "mediaProtocol": 2 if relay else 1,
+                                    "mediaInventory": inventory if relay else None,
+                                    "mediaRequests": requests if relay else None,
                                     "boardProtocol": 1, "boardSeedTag": seed_tag,
                                     "board": board if board and board["revision"] != self.board_since() else None,
                                     "sharedBase": None if self.headers.get("X-CoupleDraw-Base-Known") == "1"
@@ -693,6 +745,110 @@ def serve(db_path, host, port, media_dir=None):
         def board_since(self):
             raw = self.headers.get("X-CoupleDraw-Board", "")
             return int(raw) if re.fullmatch(r"[0-9]{1,11}", raw) else None
+
+        def relay_media(self, member):
+            """Receipts and recovery use pair-scoped references, never public URLs."""
+            action = self.path.rsplit("/", 1)[1]
+            try:
+                obj = self.read_json(1_250_000 if action == "restore" else 8192)
+                if not isinstance(obj, dict):
+                    raise ValueError("Invalid media request")
+                if action == "ack":
+                    receipts = obj["receipts"]
+                    if not isinstance(receipts, list) or not 1 <= len(receipts) <= 4:
+                        raise ValueError("Invalid media receipts")
+                    seen = set()
+                    for receipt in receipts:
+                        if (not isinstance(receipt, dict) or set(receipt) != {"source", "revision", "mediaIDs"} or
+                                receipt["source"] not in ("a", "b", "together", "base") or
+                                type(receipt["revision"]) is not int or not 1 <= receipt["revision"] < 2**63 or
+                                receipt["source"] in seen):
+                            raise ValueError("Invalid media receipt")
+                        seen.add(receipt["source"])
+                        self.valid_media_ids(receipt["mediaIDs"], maximum=13)
+                elif action == "request":
+                    self.valid_media_ids(obj["mediaIDs"])
+                else:
+                    ident = obj["mediaID"]
+                    media.path(ident)
+                    image = base64.b64decode(obj["data"], validate=True)
+                    if (not 0 < len(image) <= 900_000 or hashlib.sha256(image).hexdigest() != ident or
+                            not (image.startswith(b"\xff\xd8") or image.startswith(b"\x89PNG\r\n\x1a\n"))):
+                        raise ValueError("Invalid restored image")
+            except (ValueError, KeyError, TypeError, binascii.Error):
+                return self.reply(400, {"error": "Invalid media delivery request"})
+
+            with state_changed, connect(db_path) as db:
+                db.execute("BEGIN IMMEDIATE")
+                references = media.references(db, member[0])
+                identifiers = set().union(*references.values()) if references else set()
+                if action == "ack":
+                    accepted = []
+                    for receipt in receipts:
+                        key = (member[0], receipt["source"], receipt["revision"])
+                        # A superseded revision cannot acknowledge its replacement.
+                        if references.get(key) != set(receipt["mediaIDs"]):
+                            continue
+                        db.execute("INSERT OR IGNORE INTO media_deliveries VALUES (?, ?, ?, ?)", (*key, member[1]))
+                        accepted.append(receipt)
+                    # A resend is complete only when all references to the image
+                    # on this phone have fresh receipts, not when bytes are sent.
+                    for ident, in db.execute("SELECT media_id FROM media_requests WHERE pair_id=? AND role=?", member).fetchall():
+                        keys = [key for key, ids in references.items() if ident in ids]
+                        if keys and all(db.execute("SELECT 1 FROM media_deliveries WHERE pair_id=? AND source=? AND revision=? AND role=?",
+                                                   (*key, member[1])).fetchone() for key in keys):
+                            db.execute("DELETE FROM media_requests WHERE pair_id=? AND media_id=? AND role=?", (member[0], ident, member[1]))
+                            media.changed(db, member[0])
+                    db.commit()  # Receipts are durable before any file is removed.
+                    db.execute("BEGIN IMMEDIATE")
+                    try:
+                        removed = media.prune(db)
+                    except OSError:
+                        removed = 0
+                        print("Media cleanup deferred until next server start.", flush=True)
+                    db.commit()
+                    state_changed.notify_all()
+                    result = {"accepted": accepted, "removedBytes": removed}
+                    self.event_detail = f" receipts={len(accepted)} removed_bytes={removed}"
+                elif action == "request":
+                    if not set(obj["mediaIDs"]) <= identifiers:
+                        return self.reply(404, {"error": "Media is not part of this pair's latest artwork"})
+                    changed = False
+                    for ident in obj["mediaIDs"]:
+                        for key, ids in references.items():
+                            if ident in ids:
+                                changed |= db.execute("DELETE FROM media_deliveries WHERE pair_id=? AND source=? AND revision=? AND role=?",
+                                                      (*key, member[1])).rowcount > 0
+                        changed |= db.execute("INSERT OR IGNORE INTO media_requests VALUES (?, ?, ?)", (member[0], ident, member[1])).rowcount > 0
+                    if changed:
+                        media.changed(db, member[0])
+                    db.commit()
+                    state_changed.notify_all()
+                    result = {"queued": True}
+                else:
+                    if ident not in identifiers:
+                        return self.reply(404, {"error": "Media is not part of this pair's latest artwork"})
+                    if not db.execute("SELECT 1 FROM media_requests WHERE pair_id=? AND media_id=?", (member[0], ident)).fetchone():
+                        return self.reply(409, {"error": "This resend is no longer needed"})
+                    was_missing = not media.path(ident).exists()
+                    try:
+                        media.store_image({"data": obj["data"]})
+                    except OSError:
+                        return self.reply(507, {"error": "The server could not save the resend. Check available disk space."})
+                    if was_missing:
+                        for pair in {key[0] for key, ids in media.references(db).items() if ident in ids}:
+                            media.changed(db, pair)
+                    db.commit()
+                    state_changed.notify_all()
+                    result = {"restored": True}
+            return self.reply(200, result)
+
+        @staticmethod
+        def valid_media_ids(identifiers, maximum=MAX_RELAY_IMAGES):
+            if (not isinstance(identifiers, list) or not 1 <= len(identifiers) <= maximum or
+                    any(not isinstance(ident, str) or not re.fullmatch(r"[0-9a-f]{64}", ident) for ident in identifiers) or
+                    len(set(identifiers)) != len(identifiers)):
+                raise ValueError("Invalid media identifiers")
 
         def edit_board(self, member, seed=False):
             try:
@@ -778,6 +934,8 @@ def serve(db_path, host, port, media_dir=None):
             member = self.member()
             if not member:
                 return self.reply(401, {"error": "Invalid pairing token"})
+            if self.path in ("/v1/media/ack", "/v1/media/request", "/v1/media/restore"):
+                return self.relay_media(member)
             if self.path in ("/v1/board/seed", "/v1/board/ops"):
                 return self.edit_board(member, seed=self.path.endswith("/seed"))
             if self.path == "/v1/device":
@@ -906,7 +1064,7 @@ def serve(db_path, host, port, media_dir=None):
                 threading.Thread(target=notify_partner,
                                  args=(db_path, member[0], member[1], source, current + 1),
                                  daemon=True).start()
-            return self.reply(200, body)
+            return self.reply(200, body, {"X-CoupleDraw-Media": "2"} if self.headers.get("X-CoupleDraw-Media") == "2" else None)
 
         def log_request(self, code="-", size="-"):
             # send_response calls this once per request, including generated errors.
@@ -914,6 +1072,7 @@ def serve(db_path, host, port, media_dir=None):
             elapsed = (time.perf_counter() - getattr(self, "started_at", time.perf_counter())) * 1000
             route = urlsplit(self.path).path
             if route not in ("/v1/state", "/v1/device", "/v1/draft", "/v1/apply", "/v1/board/seed", "/v1/board/ops",
+                             "/v1/media/ack", "/v1/media/request", "/v1/media/restore",
                              "/v1/pairing/create", "/v1/pairing/join", "/v1/pairing/status", "/v1/pairing/cancel"):
                 route = "<other>"
             timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
@@ -930,6 +1089,7 @@ def serve(db_path, host, port, media_dir=None):
     print(f"CoupleDraw sync listening on {host}:{port}; use HTTP only on trusted local Wi-Fi, HTTPS elsewhere")
     print(f"Photos stored in {media.root}; migrated {migrated} inline photos, removed {removed} unused bytes")
     print("Create/Join pairing enabled: single-use codes expire in 5 minutes; private recovery lasts 24 hours")
+    print("Temporary image delivery enabled: files are removed after both updated phones confirm local storage")
     if not push_configured():
         print("Partner push alerts disabled: set APNS_KEY_FILE, APNS_KEY_ID, APNS_TEAM_ID and APNS_TOPIC")
     if ntfy:

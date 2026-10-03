@@ -46,6 +46,8 @@ Stickers save locally with the draft and are shared on **Apply**, including in O
 
 **History** shows applied revisions. Use the share icon to export a PNG manually. **History → Delete all** removes saved revisions and exported PNGs for the open canvas *on this phone*, after confirmation. The editable drawing and paired server copy remain; Apply again to give the Shortcut a current version. Recovered drafts are also in History, but do not replace the applied wallpaper.
 
+Each phone keeps original photos and stickers for the latest My art, Partner's art, and Our art, even if a local draft did not accept a newer paired snapshot. After both phones confirm storage, the server removes its image files. It keeps drawing metadata and strokes. See [media and privacy](media-and-privacy.md) for resends and storage limits.
+
 Keep the same app bundle ID and signing Team when installing an update to preserve local documents. Deleting the app removes its local data unless you have a backup. When moving from the earlier fixed 390 × 844 build, open the updated app and Apply again so its wallpaper uses the phone's dimensions.
 
 ## Lock Screen widget
@@ -54,4 +56,4 @@ The **CoupleDrawWidget** extension offers circular, rectangular, and inline Lock
 
 ## Clear cache
 
-Open **Setup → Local storage → Clear cache** to remove rendered wallpaper PNGs and unused media files. The size shown is the removable cache on this phone. Editable drafts, pairing, applied History, and original photos/stickers still referenced by those documents are preserved. Missing PNGs regenerate from local artwork when needed; a paired Shortcut still checks the service for the latest revision. To remove old original images still referenced by History, use **History → Delete all** for that canvas, then Clear cache. Photos/stickers still used by the current draft remain.
+Open **Setup → Local storage → Clear cache** to remove rendered wallpaper PNGs and unused media files. The size shown is the removable cache on this phone. Editable drafts, pairing, applied History, and original photos/stickers referenced by those documents or the latest paired canvases are preserved. These originals may be the only remaining copies after delivery; Clear cache never removes them. Missing PNGs regenerate from local artwork when needed; a paired Shortcut still checks the service for the latest revision. To remove old original images still referenced by History, use **History → Delete all** for that canvas, then Clear cache. Photos/stickers still used by a current draft or latest paired canvas remain. When a newer applied revision replaces a photo on the server, the old relay reference is released locally; clearing cache can then remove it if no draft or History uses it.

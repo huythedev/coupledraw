@@ -35,12 +35,15 @@ On a VPS, copy the **complete** script, run `serve` with its default `127.0.0.1:
 
 **My art** is yours to edit; your partner sees it after you Apply. **Partner's art** is view-only on your phone. **Our art** syncs completed stroke edits while the app is open; Apply saves a shared wallpaper snapshot. Each phone renders the chosen wallpaper at its own screen size.
 
+Photos and stickers use temporary delivery storage: each phone keeps the originals for the latest paired canvases, and the server removes its image files after both phones confirm local storage. Clear cache preserves these originals. Lost copies can be requested from the other phone; the server is no longer a photo backup after delivery. See [media and privacy](docs/media-and-privacy.md). This reduces retention; it is not end-to-end encryption.
+
 While open, the app waits for server changes and refreshes promptly. While closed or suspended, it does not keep a background connection: the Shortcut fetches the latest selected drawing **when invoked**. Optional ntfy or APNs alerts can announce a partner's Apply, but delivery and automation behavior depend on iOS. The app does not use background location tracking.
 
 ## More guides
 
 - [Using the app](docs/using-the-app.md) — canvas choices, photos, shared board, History, and widget.
 - [Pairing](docs/pairing.md) — Create/Join, private credentials, invite links, and recovery.
+- [Media and privacy](docs/media-and-privacy.md) — temporary images, phone storage, receipts, and recovery.
 - [Server setup](docs/server.md) — local network, Ubuntu VPS, private tokens, ntfy, APNs, and logs.
 - [Wallpaper and automations](docs/wallpaper-and-automations.md) — Shortcuts, notification triggers, locked phones, and limitations.
 - [Build and signing](docs/build-and-sign.md) — Xcode, unsigned IPA, signing both targets, and releases.

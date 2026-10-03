@@ -13,7 +13,7 @@ struct WallpaperSetupView: View {
                 Section("Local storage") {
                     LabeledContent("Wallpaper cache", value: ByteCountFormatter.string(fromByteCount: cacheSize, countStyle: .file))
                     Button("Clear cache") { showClearCache = true }
-                    Text("Removes rendered wallpapers and unused image files. Drawings, photos and stickers in use, History, and pairing are kept. Wallpapers are regenerated when needed.")
+                    Text("Removes rendered wallpapers and unused images. Keeps drafts, History, pairing, and originals for the latest paired art. These originals stay on the phones after server delivery copies are deleted.")
                         .font(.footnote).foregroundStyle(.secondary)
                     if !cacheMessage.isEmpty { Text(cacheMessage).font(.footnote) }
                 }
