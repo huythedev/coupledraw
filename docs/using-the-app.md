@@ -2,6 +2,10 @@
 
 [Back to README](../README.md)
 
+## Pair with your partner
+
+Open **Pair** and use the default `https://draw.huythedev.com` or enter another server. One person taps **Create Pair** and shares the six-digit code, invite link, or QR code. The other taps **Join Pair** and enters the code on the same server; opening the invite link fills both fields. Tap Join Pair to confirm. The code expires after five minutes and can only create one pair. Private credentials are saved automatically; neither person needs an A/B token. Reopen Pair to resume an interrupted connection. See [pairing](pairing.md) for recovery and existing token pairs.
+
 ## Choose a canvas and draw
 
 The **Canvas** picker chooses the drawing you are looking at:

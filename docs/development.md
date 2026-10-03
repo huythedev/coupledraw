@@ -12,7 +12,7 @@ Run the server tests with:
 python3 -m unittest discover -s server -v
 ```
 
-In Xcode, choose **Product → Test** for the PencilKit model tests. The Python tests cover concurrent A/B updates, retries, move and erase, clear with concurrent additions, migration, long-poll wakeups, persistence, invalid input, and revision checks. Physical camera, PencilKit, signing, notification automation, and locked-device wallpaper behavior must be tested on actual phones.
+In Xcode, choose **Product → Test** for the PencilKit model tests. The Python tests cover concurrent A/B updates, retries, move and erase, clear with concurrent additions, migration, long-poll wakeups, persistence, invalid input, and revision checks. Pairing tests cover single-use codes, concurrent joins across processes, expiry, recovery, rate limits and secret-free logs. iOS tests cover invite validation, Keychain recovery via injected storage, redirect/role rejection and preserving an existing pair after a failed connection. Physical QR scanning, camera, PencilKit, signing, notification automation, and locked-device wallpaper behavior must be tested on actual phones.
 
 ## Data and syncing
 
@@ -34,4 +34,4 @@ Regression tests cover delayed publish responses during re-pairing, editing duri
 
 ## Practical limits
 
-This is a self-hosted prototype. No hosted pairing service, Apple signing identity, APNs key, or pre-installed Shortcut is supplied. iOS controls wallpaper changes; there is no public direct setter in this app and no guaranteed remote wallpaper automation. Shared editing sends completed strokes, moves, and erases, but does not stream a partner's in-progress pen tip or cursor. Verify notification triggers and wallpaper prompts on the iOS version and devices you intend to use.
+The app defaults to https://draw.huythedev.com and also supports self-hosted servers. Hosting and availability remain the server operator's responsibility; no Apple signing identity, APNs key, or pre-installed Shortcut is supplied. iOS controls wallpaper changes; there is no public direct setter in this app and no guaranteed remote wallpaper automation. Shared editing sends completed strokes, moves, and erases, but does not stream a partner's in-progress pen tip or cursor. Verify notification triggers and wallpaper prompts on the iOS version and devices you intend to use.

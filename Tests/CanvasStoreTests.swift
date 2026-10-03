@@ -690,4 +690,212 @@ import UIKit
         XCTAssertEqual(store.revisions.first?.document.backgroundHex, snapshot.backgroundHex)
         XCTAssertTrue(UserDefaults.standard.stringArray(forKey: "syncDirty")?.contains(CanvasSlot.together.rawValue) == true)
     }
+
+    private func pairingHTTPReply(_ request: URLRequest, _ body: [String: Any], status: Int = 200,
+                                  headers: [String: String]? = nil) throws -> (Data, URLResponse) {
+        (try JSONSerialization.data(withJSONObject: body),
+         try XCTUnwrap(HTTPURLResponse(url: XCTUnwrap(request.url), statusCode: status,
+                                     httpVersion: "HTTP/1.1", headerFields: headers)))
+    }
+
+    func testDefaultPairingServerAndInviteValidation() throws {
+        XCTAssertEqual(PairSync.defaultEndpoint, "https://draw.huythedev.com")
+        XCTAssertEqual(try PairSync.normalizedEndpoint(" draw.huythedev.com/ "), PairSync.defaultEndpoint)
+        XCTAssertEqual(try PairSync.normalizedEndpoint("http://192.168.1.20:8787/"), "http://192.168.1.20:8787")
+        let invite = PairingInvite(endpoint: "https://my-server.invalid:8443", code: "048273")
+        XCTAssertEqual(PairingInvite(url: invite.url), invite)
+        XCTAssertEqual(invite.formattedCode, "048 273")
+        XCTAssertEqual(PairSync.normalizedPairingCode("048 273"), "048273")
+        XCTAssertNil(PairSync.normalizedPairingCode("１２３４５６"))
+        XCTAssertNil(PairSync.normalizedPairingCode("abc048273"))
+        for raw in ["http://public.invalid", "https://a:b@server.invalid", "https://server.invalid/v1/state", "https://server.invalid?token=secret"] {
+            XCTAssertThrowsError(try PairSync.normalizedEndpoint(raw))
+        }
+        for raw in ["coupledraw://pair?server=https://server.invalid&code=048273&code=111111",
+                    "coupledraw://pair?server=http://public.invalid&code=048273",
+                    "coupledraw://pair?server=https://server.invalid&code=048273#extra",
+                    "coupledraw://open?server=https://server.invalid&code=048273"] {
+            XCTAssertNil(PairingInvite(url: try XCTUnwrap(URL(string: raw))))
+        }
+    }
+
+    func testCreatePairWaitsWithoutSendingExistingCredentialsOrChangingCurrentPair() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        UserDefaults.standard.set("https://existing.invalid", forKey: "syncEndpoint")
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var savedPairing: String?
+        var testToken = "existing-private-token"
+        var actions: [String] = []
+        let sync = PairSync(transport: { request in
+            XCTAssertNotNil(savedPairing)
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            XCTAssertEqual(request.url?.host, "draw.huythedev.com")
+            actions.append(request.url!.lastPathComponent)
+            if request.url?.lastPathComponent == "status" {
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Prefer"), "wait=20")
+                XCTAssertEqual(request.timeoutInterval, 35)
+            }
+            return try self.pairingHTTPReply(request, ["state": "waiting", "code": "048273",
+                                                      "expiresAt": Date().timeIntervalSince1970 + 300])
+        }, readToken: { testToken }, writeToken: { testToken = $0 },
+           readPairing: { savedPairing }, writePairing: { savedPairing = $0 })
+        defer { sync.suspend() }
+        try sync.beginPairing(.create, endpoint: PairSync.defaultEndpoint)
+        let saved = try JSONDecoder().decode(PairingAttempt.self, from: Data(XCTUnwrap(savedPairing).utf8))
+        XCTAssertEqual(saved.secret.count, 64)
+        let firstCompleted = try await sync.resumePairing(store: store)
+        let secondCompleted = try await sync.resumePairing(store: store)
+        XCTAssertFalse(firstCompleted); XCTAssertFalse(secondCompleted)
+        XCTAssertEqual(actions, ["create", "status"])
+        XCTAssertEqual(sync.pairingAttempt?.invite?.formattedCode, "048 273")
+        XCTAssertEqual(sync.endpoint, "https://existing.invalid")
+        XCTAssertEqual(testToken, "existing-private-token")
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "syncEndpoint"), "https://existing.invalid")
+    }
+
+    func testJoinPairRecoversAfterLostResponseAndAppRestart() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var savedPairing: String?
+        var testToken = ""
+        var originalSecret: String?
+        let first = PairSync(transport: { request in
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: String])
+            originalSecret = body["secret"]
+            XCTAssertEqual(body["code"], "048273")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            throw URLError(.networkConnectionLost)
+        }, readToken: { testToken }, writeToken: { testToken = $0 },
+           readPairing: { savedPairing }, writePairing: { savedPairing = $0 })
+        defer { first.suspend() }
+        try first.beginPairing(.join, endpoint: PairSync.defaultEndpoint, code: "048 273")
+        do { _ = try await first.resumePairing(store: store); XCTFail("Expected lost response") }
+        catch { XCTAssertTrue(error is URLError) }
+        XCTAssertNotNil(savedPairing)
+        XCTAssertTrue(testToken.isEmpty)
+        let credential = String(repeating: "b", count: 64)
+        let restarted = PairSync(transport: { request in
+            if request.url?.path == "/v1/pairing/join" {
+                let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: String])
+                XCTAssertEqual(body["secret"], originalSecret)
+                XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+                return try self.pairingHTTPReply(request, ["state": "paired", "role": "B", "credential": credential])
+            }
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer " + credential)
+            return try self.stateReply(request, role: "B")
+        }, readToken: { testToken }, writeToken: { testToken = $0 },
+           readPairing: { savedPairing }, writePairing: { savedPairing = $0 })
+        defer { restarted.suspend() }
+        let completed = try await restarted.resumePairing(store: store)
+        restarted.stop()
+        XCTAssertTrue(completed)
+        XCTAssertNil(savedPairing)
+        XCTAssertNil(restarted.pairingAttempt)
+        XCTAssertEqual(restarted.endpoint, PairSync.defaultEndpoint)
+        XCTAssertEqual(restarted.role, "B")
+        XCTAssertEqual(testToken, credential)
+    }
+
+    func testFailedNewPairConnectionRetainsCurrentPairAndRecoverySecret() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var savedPairing: String?
+        var testToken = ""
+        let sync = PairSync(transport: { request in
+            if request.url?.path == "/v1/pairing/join" {
+                return try self.pairingHTTPReply(request, ["state": "paired", "role": "B", "credential": String(repeating: "c", count: 64)])
+            }
+            if request.url?.host == "new-pair.invalid" {
+                return try self.pairingHTTPReply(request, ["error": "Temporarily unavailable"], status: 503)
+            }
+            return try self.stateReply(request)
+        }, readToken: { testToken }, writeToken: { testToken = $0 },
+           readPairing: { savedPairing }, writePairing: { savedPairing = $0 })
+        defer { sync.suspend() }
+        try await sync.configure(endpoint: "https://old-pair.invalid", token: "previous-private-token", store: store)
+        sync.stop()
+        try sync.beginPairing(.join, endpoint: "https://new-pair.invalid", code: "048273")
+        let pending = savedPairing
+        do { _ = try await sync.resumePairing(store: store); XCTFail("Expected failed state request") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("Temporarily unavailable")) }
+        sync.stop()
+        XCTAssertEqual(sync.endpoint, "https://old-pair.invalid")
+        XCTAssertEqual(sync.role, "A")
+        XCTAssertEqual(testToken, "previous-private-token")
+        XCTAssertEqual(savedPairing, pending)
+        XCTAssertNotNil(sync.pairingAttempt)
+    }
+
+    func testPairingRejectsRedirectsAndIncorrectCredentialRoles() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var savedPairing: String?
+        var testToken = "previous-private-token"
+        var redirect = true
+        let sync = PairSync(transport: { request in
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            return try self.pairingHTTPReply(request, ["state": "paired", "role": "A", "credential": String(repeating: "a", count: 64)],
+                                             status: redirect ? 302 : 200, headers: redirect ? ["Location": "https://other.invalid"] : nil)
+        }, readToken: { testToken }, writeToken: { testToken = $0 },
+           readPairing: { savedPairing }, writePairing: { savedPairing = $0 })
+        defer { sync.suspend() }
+        try sync.beginPairing(.join, endpoint: PairSync.defaultEndpoint, code: "048273")
+        do { _ = try await sync.resumePairing(store: store); XCTFail("Expected redirect rejection") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("redirected")) }
+        redirect = false
+        do { _ = try await sync.resumePairing(store: store); XCTFail("Expected incorrect role rejection") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("Invalid sync")) }
+        XCTAssertEqual(testToken, "previous-private-token")
+        XCTAssertNotNil(savedPairing)
+        XCTAssertTrue(sync.endpoint.isEmpty)
+    }
+
+    func testCancellingAnInviteDiscardsItsLateCreateResponse() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let requested = expectation(description: "Create sent")
+        var reply: CheckedContinuation<(Data, URLResponse), Error>?
+        var savedPairing: String?
+        let sync = PairSync(transport: { request in
+            if request.url?.lastPathComponent == "create" {
+                return try await withCheckedThrowingContinuation { reply = $0; requested.fulfill() }
+            }
+            return try self.pairingHTTPReply(request, ["state": "cancelled"])
+        }, readToken: { "" }, writeToken: { _ in },
+           readPairing: { savedPairing }, writePairing: { savedPairing = $0 })
+        defer { sync.suspend() }
+        try sync.beginPairing(.create, endpoint: PairSync.defaultEndpoint)
+        let creating = Task { try await sync.resumePairing(store: store) }
+        await fulfillment(of: [requested], timeout: 5)
+        try await sync.cancelPairing()
+        let request = URLRequest(url: URL(string: PairSync.defaultEndpoint + "/v1/pairing/create")!)
+        try XCTUnwrap(reply).resume(returning: pairingHTTPReply(request, ["state": "waiting", "code": "048273",
+                                                                          "expiresAt": Date().timeIntervalSince1970 + 300]))
+        do { _ = try await creating.value; XCTFail("Expected cancelled attempt") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertNil(savedPairing)
+        XCTAssertNil(sync.pairingAttempt)
+        XCTAssertFalse(sync.configured)
+    }
+
+    func testPairingCannotStartUntilItsRecoverySecretIsStored() throws {
+        var requests = 0
+        let sync = PairSync(transport: { _ in requests += 1; throw URLError(.badURL) },
+                            readToken: { "" }, writeToken: { _ in }, readPairing: { nil },
+                            writePairing: { _ in throw PairSync.SyncError.configuration })
+        defer { sync.suspend() }
+        XCTAssertThrowsError(try sync.beginPairing(.create, endpoint: PairSync.defaultEndpoint))
+        XCTAssertNil(sync.pairingAttempt)
+        XCTAssertEqual(requests, 0)
+    }
 }

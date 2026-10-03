@@ -16,6 +16,7 @@ struct EditorView: View {
     @State private var showSetup = false
     @State private var showTarget = false
     @State private var showPairing = false
+    @State private var pairingInvite: PairingInvite?
     @State private var showFullScreen = false
 
     private var record: CanvasRecord { store.displayedRecord(slot) }
@@ -90,6 +91,12 @@ struct EditorView: View {
             sync.notificationsStatus = "Push registration failed: \(event.object as? String ?? "Unknown error")"
         }
         .onOpenURL { url in
+            if let invite = PairingInvite(url: url) {
+                showHistory = false; showSetup = false; showTarget = false; showFullScreen = false
+                pairingInvite = invite
+                showPairing = true
+                return
+            }
             guard url.scheme == "coupledraw", url.host == "open" else { return }
             toastID = nil
             appliedToast = nil
@@ -97,13 +104,14 @@ struct EditorView: View {
             showSetup = false
             showTarget = false
             showPairing = false
+            pairingInvite = nil
             showFullScreen = false
             slot = .first
         }
         .sheet(isPresented: $showHistory) { RevisionHistory(slot: slot) }
         .sheet(isPresented: $showSetup) { WallpaperSetupView() }
         .sheet(isPresented: $showTarget) { PartnerTargetView() }
-        .sheet(isPresented: $showPairing) { PairingView() }
+        .sheet(isPresented: $showPairing, onDismiss: { pairingInvite = nil }) { PairingView(invitation: pairingInvite) }
         .fullScreenCover(isPresented: $showFullScreen) {
             FullScreenCanvasView(slot: slot, isPresented: $showFullScreen,
                                  tool: $tool, inkColor: $inkColor, size: $size)

@@ -65,6 +65,61 @@ private struct PublishBody: Encodable {
 
 private struct ServerError: Decodable { let error: String }
 
+struct PairingInvite: Equatable {
+    let endpoint: String
+    let code: String
+    let expiresAt: Date?
+
+    init(endpoint: String, code: String, expiresAt: Date? = nil) {
+        self.endpoint = endpoint; self.code = code; self.expiresAt = expiresAt
+    }
+
+    init?(url: URL) {
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.scheme == "coupledraw", parts.host == "pair",
+              parts.path.isEmpty, parts.user == nil, parts.password == nil, parts.fragment == nil,
+              let items = parts.queryItems, items.count == 2,
+              items.filter({ $0.name == "server" }).count == 1,
+              items.filter({ $0.name == "code" }).count == 1,
+              let raw = items.first(where: { $0.name == "server" })?.value,
+              let endpoint = try? PairSync.normalizedEndpoint(raw),
+              let rawCode = items.first(where: { $0.name == "code" })?.value,
+              let code = PairSync.normalizedPairingCode(rawCode) else { return nil }
+        self.init(endpoint: endpoint, code: code)
+    }
+
+    var url: URL {
+        var parts = URLComponents()
+        parts.scheme = "coupledraw"; parts.host = "pair"
+        parts.queryItems = [URLQueryItem(name: "server", value: endpoint), URLQueryItem(name: "code", value: code)]
+        return parts.url!
+    }
+
+    var formattedCode: String { String(code.prefix(3)) + " " + String(code.suffix(3)) }
+}
+
+struct PairingAttempt: Codable, Equatable {
+    enum Kind: String, Codable { case create, join }
+    let kind: Kind
+    let endpoint: String
+    let secret: String
+    var code: String?
+    var expiresAt: Double?
+
+    var invite: PairingInvite? {
+        guard kind == .create, let code else { return nil }
+        return PairingInvite(endpoint: endpoint, code: code, expiresAt: expiresAt.map(Date.init(timeIntervalSince1970:)))
+    }
+}
+
+private struct PairingReply: Decodable {
+    let state: String
+    let code: String?
+    let expiresAt: Double?
+    let role: String?
+    let credential: String?
+}
+
 /// Authentication stays on the explicitly configured origin. A server/proxy
 /// redirect is reported as an error rather than forwarding a token or artwork.
 final class SyncRedirectPolicy: NSObject, URLSessionTaskDelegate {
@@ -82,6 +137,7 @@ private enum SyncTransport {
 }
 
 @MainActor final class PairSync: ObservableObject {
+    nonisolated static let defaultEndpoint = "https://draw.huythedev.com"
     @Published private(set) var status = "Local only"
     @Published private(set) var role: String?
     @Published private(set) var hasPartnerArt = false
@@ -90,6 +146,8 @@ private enum SyncTransport {
     @Published private(set) var ntfyBaseURL: String?
     @Published var notificationsStatus = "Partner alerts are off"
     @Published private(set) var endpoint = UserDefaults.standard.string(forKey: "syncEndpoint") ?? ""
+    @Published private(set) var pairingAttempt: PairingAttempt?
+    @Published private(set) var completingPairing = false
     private var token: String { readToken() ?? "" }
     private var versions: [CanvasSlot: Int] = {
         let saved = UserDefaults.standard.dictionary(forKey: "syncVersions") as? [String: Int] ?? [:]
@@ -117,12 +175,24 @@ private enum SyncTransport {
     private let transport: (URLRequest) async throws -> (Data, URLResponse)
     private let readToken: () -> String?
     private let writeToken: (String) throws -> Void
+    private let writePairing: (String?) throws -> Void
 
     init(transport: ((URLRequest) async throws -> (Data, URLResponse))? = nil,
-         readToken: (() -> String?)? = nil, writeToken: ((String) throws -> Void)? = nil) {
+         readToken: (() -> String?)? = nil, writeToken: ((String) throws -> Void)? = nil,
+         readPairing: (() -> String?)? = nil, writePairing: ((String?) throws -> Void)? = nil) {
         self.transport = transport ?? { try await SyncTransport.session.data(for: $0) }
         self.readToken = readToken ?? { SecretStore.read() }
         self.writeToken = writeToken ?? { try SecretStore.write($0) }
+        self.writePairing = writePairing ?? { try SecretStore.writePendingPairing($0) }
+        if let saved = (readPairing ?? { SecretStore.readPendingPairing() })(),
+           let data = saved.data(using: .utf8),
+           let attempt = try? JSONDecoder().decode(PairingAttempt.self, from: data),
+           (try? Self.normalizedEndpoint(attempt.endpoint)) == attempt.endpoint,
+           Self.validPairingSecret(attempt.secret),
+           attempt.code == nil || Self.normalizedPairingCode(attempt.code!) == attempt.code,
+           attempt.kind == .create || attempt.code != nil {
+            pairingAttempt = attempt
+        }
     }
 
     private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
@@ -151,7 +221,7 @@ private enum SyncTransport {
         #endif
     }
 
-    static func allowsServerURL(_ url: URL) -> Bool {
+    nonisolated static func allowsServerURL(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased(),
               !host.isEmpty, url.user == nil, url.password == nil,
               url.query == nil, url.fragment == nil,
@@ -167,6 +237,98 @@ private enum SyncTransport {
             (octets[0] == 100 && (64...127).contains(octets[1])) ||
             (octets[0] == 172 && (16...31).contains(octets[1])) ||
             (octets[0] == 192 && octets[1] == 168)
+    }
+
+    nonisolated static func normalizedEndpoint(_ raw: String) throws -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !value.contains("://") { value = "https://" + value }
+        guard let url = URL(string: value), allowsServerURL(url),
+              !value.contains(where: { $0.isWhitespace }) else { throw SyncError.invalidServerURL }
+        return value.hasSuffix("/") ? String(value.dropLast()) : value
+    }
+
+    nonisolated static func normalizedPairingCode(_ raw: String) -> String? {
+        guard raw.count <= 32 else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "-", with: "")
+        return value.utf8.count == 6 && value.utf8.allSatisfy({ (48...57).contains($0) }) ? value : nil
+    }
+
+    nonisolated private static func validPairingSecret(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+
+    private func savePairing(_ attempt: PairingAttempt?) throws {
+        let encoded = try attempt.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
+        try writePairing(encoded)
+        pairingAttempt = attempt
+    }
+
+    /// Persist the recovery secret before the request; losing a response cannot
+    /// strand either phone after its invitation has been consumed.
+    func beginPairing(_ kind: PairingAttempt.Kind, endpoint: String, code: String = "") throws {
+        guard pairingAttempt == nil else { throw SyncError.server("Resume or cancel the current pairing first.") }
+        let server = try Self.normalizedEndpoint(endpoint)
+        let normalizedCode = Self.normalizedPairingCode(code)
+        if kind == .join && normalizedCode == nil { throw SyncError.server("Enter the six-digit code from your partner.") }
+        let secret = SymmetricKey(size: .bits256).withUnsafeBytes { bytes in
+            bytes.map { String(format: "%02x", $0) }.joined()
+        }
+        try savePairing(PairingAttempt(kind: kind, endpoint: server, secret: secret,
+                                      code: kind == .join ? normalizedCode : nil))
+    }
+
+    private func pairingRequest(_ attempt: PairingAttempt, action: String, wait: Bool = false) async throws -> PairingReply {
+        let server = try Self.normalizedEndpoint(attempt.endpoint)
+        guard let url = URL(string: server + "/v1/pairing/" + action) else { throw SyncError.invalidServerURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = wait ? 35 : 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        if wait { request.setValue("wait=20", forHTTPHeaderField: "Prefer") }
+        var body = ["secret": attempt.secret]
+        if action == "join" { body["code"] = attempt.code }
+        request.httpBody = try JSONEncoder().encode(body)
+        // Pairing is anonymous: an existing pair's bearer token must never be
+        // forwarded to a newly selected server or to an invitation URL.
+        let (data, response) = try await send(request)
+        guard pairingAttempt?.secret == attempt.secret else { throw CancellationError() }
+        guard let http = response as? HTTPURLResponse else { throw SyncError.response }
+        if http.statusCode == 404 || http.statusCode == 401 {
+            throw SyncError.server("Update the Python server to enable Create Pair and Join Pair. Existing tokens still work under Manual pairing.")
+        }
+        guard http.statusCode == 200 else { throw serverError(data) }
+        return try JSONDecoder().decode(PairingReply.self, from: data)
+    }
+
+    /// True after both phones have joined and this phone's credential is saved.
+    func resumePairing(store: CanvasStore, wait: Bool = true) async throws -> Bool {
+        guard var attempt = pairingAttempt, !completingPairing else { return false }
+        let action = attempt.kind == .join ? "join" : (attempt.code == nil ? "create" : "status")
+        let reply = try await pairingRequest(attempt, action: action, wait: action == "status" && wait)
+        if reply.state == "waiting", attempt.kind == .create {
+            guard let code = reply.code, Self.normalizedPairingCode(code) == code,
+                  let expires = reply.expiresAt, expires.isFinite, expires > 0 else { throw SyncError.response }
+            attempt.code = code; attempt.expiresAt = expires
+            if attempt != pairingAttempt { try savePairing(attempt) }
+            return false
+        }
+        guard reply.state == "paired", reply.role == (attempt.kind == .create ? "A" : "B"),
+              let credential = reply.credential, Self.validPairingSecret(credential) else { throw SyncError.response }
+        completingPairing = true
+        defer { completingPairing = false }
+        try await configure(endpoint: attempt.endpoint, token: credential, store: store)
+        try savePairing(nil)
+        return true
+    }
+
+    func cancelPairing() async throws {
+        guard let attempt = pairingAttempt else { return }
+        guard !completingPairing else { throw SyncError.server("Wait for this phone to finish connecting.") }
+        let reply = try await pairingRequest(attempt, action: "cancel")
+        guard reply.state == "cancelled" else { throw SyncError.response }
+        try savePairing(nil)
     }
 
     func configure(endpoint raw: String, token: String, store: CanvasStore) async throws {
@@ -710,6 +872,16 @@ private enum SyncTransport {
 private enum SecretStore {
     private static let account = "CoupleDrawPairTokenAfterFirstUnlock"
     private static let legacyAccount = "CoupleDrawPairToken"
+    private static let pendingAccount = "CoupleDrawPendingPairing"
+
+    static func readPendingPairing() -> String? { read(account: pendingAccount) }
+
+    static func writePendingPairing(_ value: String?) throws {
+        if let value { try write(value, account: pendingAccount); return }
+        let result = SecItemDelete([kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrAccount as String: pendingAccount] as CFDictionary)
+        guard result == errSecSuccess || result == errSecItemNotFound else { throw PairSync.SyncError.configuration }
+    }
 
     static func read() -> String? {
         read(account: account) ?? read(account: legacyAccount)
@@ -733,6 +905,14 @@ private enum SecretStore {
     }
 
     static func write(_ token: String) throws {
+        try write(token, account: account)
+        // Never remove the old item until the locked-accessible replacement exists.
+        let legacyQuery: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                          kSecAttrAccount as String: legacyAccount]
+        SecItemDelete(legacyQuery as CFDictionary)
+    }
+
+    private static func write(_ token: String, account: String) throws {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                     kSecAttrAccount as String: account]
         let value = Data(token.utf8)
@@ -749,9 +929,5 @@ private enum SecretStore {
         } else if update != errSecSuccess {
             throw PairSync.SyncError.configuration
         }
-        // Never remove the old item until the locked-accessible replacement exists.
-        let legacyQuery: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                          kSecAttrAccount as String: legacyAccount]
-        SecItemDelete(legacyQuery as CFDictionary)
     }
 }

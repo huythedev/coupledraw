@@ -11,11 +11,12 @@ The included [Python server](../server/coupledraw_server.py) uses the standard l
 From the repository root:
 
 ```sh
-python3 server/coupledraw_server.py create-pair --db coupledraw.sqlite3
 python3 server/coupledraw_server.py serve --db coupledraw.sqlite3 --host 0.0.0.0
 ```
 
-Run `create-pair` once; save the printed A and B tokens privately. Give each phone a different token. In CoupleDraw **Pair**, enter `http://COMPUTER_LAN_IP:8787`, with no `/v1/state` path. Use the server computer's Wi-Fi IP, not `localhost` on the phone. Permit Local Network access and incoming Python connections if prompted. Keep both phones and the computer on the same non-isolated Wi-Fi and keep the process running.
+In CoupleDraw **Pair**, replace the default `https://draw.huythedev.com` with `http://COMPUTER_LAN_IP:8787`, with no `/v1/state` path, then tap **Create Pair**. Your partner enters the code on the same server or opens the invite link, which fills the server address automatically. The app issues and saves private credentials for both phones. See [pairing](pairing.md). Use the server computer's Wi-Fi IP, not `localhost` on the phone. Permit Local Network access and incoming Python connections if prompted. Keep both phones and the computer on the same non-isolated Wi-Fi and keep the process running.
+
+For the legacy manual flow, run `python3 server/coupledraw_server.py create-pair --db coupledraw.sqlite3` once and save the printed A and B tokens privately. Each phone uses a different token under **Pair → Manual pairing with an existing token**. Existing pairs and tokens continue to work after an upgrade.
 
 To supply your own secrets, run `python3 server/coupledraw_server.py create-pair --custom-tokens --db coupledraw.sqlite3` instead. It privately prompts for distinct A and B tokens with confirmation; use 20–100 characters from letters, digits, `.`, `_`, `~`, or `-`. Choose hard-to-guess strings. Do not put tokens in command arguments or commit them to Git. This creates a new pair, rather than changing an existing pair's credentials.
 
@@ -32,11 +33,10 @@ Copy the **entire** `server/coupledraw_server.py` to `~/coupledraw/coupledraw_se
 ```sh
 cd ~/coupledraw
 python3 -m py_compile coupledraw_server.py
-python3 coupledraw_server.py create-pair --db coupledraw.sqlite3
 python3 coupledraw_server.py serve --db coupledraw.sqlite3
 ```
 
-Create the pair only the first time. Save both tokens. With no `--host` option, the process listens on `127.0.0.1:8787`, ready for a reverse proxy. Stop the foreground process before setting up a service. Example `/etc/systemd/system/coupledraw.service` (replace `YOUR_USER` and paths):
+Create pairs from the app; no token setup command is needed. With no `--host` option, the process listens on `127.0.0.1:8787`, ready for a reverse proxy. Stop the foreground process before setting up a service. Example `/etc/systemd/system/coupledraw.service` (replace `YOUR_USER` and paths):
 
 ```ini
 [Unit]
@@ -63,7 +63,9 @@ draw.example.com {
 }
 ```
 
-Use `https://draw.example.com` and each phone's A/B token in **Pair**. Keep port 8787 private. Test an Apply on one phone and open the other to confirm it receives the revision. When upgrading, replace the complete server script and restart the service **without deleting the SQLite database or changing tokens**; upgrade both apps alongside the server to retain the shared whiteboard protocol.
+Use `https://draw.example.com` in **Pair**, then **Create Pair / Join Pair**. If you host at `draw.huythedev.com`, the app already selects it by default. Keep port 8787 private. Test an Apply on one phone and open the other to confirm it receives the revision. When upgrading, replace the complete server script and restart the service **without deleting the SQLite database or changing tokens**; upgrade both apps alongside the server to retain the shared whiteboard protocol.
+
+Create/Join endpoints are available without an existing token. The server limits new creates and joins to five per minute per TCP peer and thirty globally; invalid six-digit guesses count. The same limit applies across processes through SQLite. Up to 100 unexpired/recoverable sessions are retained. Behind a reverse proxy, the TCP peer can be shared by all phones: add per-client limits at the proxy if hosting for many people. Forwarded-IP headers are not trusted. The server is intended for private use; these limits do not provide a public registration or abuse-management system. Pairing codes, recovery secrets and credentials are never printed in request logs.
 
 On the first startup of this version, embedded photos in older snapshots migrate to the media directory automatically, and SQLite is compacted to reclaim old photo space. Keep that directory beside the database on subsequent restarts. You may specify a different private directory with `--media-dir /path/to/coupledraw-media`; use the same option for `serve` and `compact`.
 
@@ -100,4 +102,4 @@ This requires an Apple Developer Program team and matching Push-capable provisio
 
 Server request logs show UTC time, authenticated `client=A` or `client=B` (or `-` if unauthenticated), method, endpoint, HTTP status, and `duration_ms`; Apply includes source and revision. State requests also include wait timing. Tokens, artwork, and query strings are omitted. Foreground clients normally make a waiting request of up to 20 seconds; an edit or Apply wakes it promptly, and unchanged state can return HTTP 304. The app's **live while open** status indicates the server supports waiting; **checking every 30s** suggests an older server or a proxy missing the wait header. The server may shorten waits if a proxy closes them early.
 
-If pairing fails, check the address, which token belongs to that phone, network reachability, firewall, and whether the server is still running. If Our art reports an upgrade error, install the current complete server script and update both apps while keeping the existing database. If an alert fails, check the server logs and the receiving phone's ntfy subscription or APNs registration. Alert acceptance does not guarantee iOS will run an automation.
+If pairing fails, check the server address, code expiry, network reachability, firewall, and whether the server is still running. A server upgrade message for Create/Join means replacing the complete script and restarting it. For manual pairing, check which token belongs to that phone. If Our art reports an upgrade error, install the current complete server script and update both apps while keeping the existing database. If an alert fails, check the server logs and the receiving phone's ntfy subscription or APNs registration. Alert acceptance does not guarantee iOS will run an automation.

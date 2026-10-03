@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Small private pairing/snapshot service. Use LAN HTTP only for local tests.
 
-create-pair generates or prompts for two independent bearer tokens. The service stores only editable
-snapshots; iPhones render their own wallpaper sizes from the selected source.
+The app creates single-use invitations and saves independent bearer credentials.
+create-pair still supports legacy manual tokens. iPhones render wallpaper locally.
 """
 import argparse
 import base64
 import binascii
 import getpass
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -28,6 +29,9 @@ from urllib.request import Request, urlopen
 MAX_BODY = 8_000_000
 MAX_BOARD_BYTES = 3_000_000
 MAX_STROKES = 3000
+PAIRING_TTL = 300
+PAIRING_RECOVERY_TTL = 86400
+MAX_PAIRING_SESSIONS = 100
 lock = threading.RLock()
 state_changed = threading.Condition(lock)
 
@@ -210,8 +214,141 @@ def connect(path):
     db.execute("CREATE TABLE IF NOT EXISTS whiteboards (pair_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)")
     db.execute("CREATE TABLE IF NOT EXISTS board_strokes (pair_id TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, height REAL NOT NULL, added_revision INTEGER NOT NULL, deleted_revision INTEGER, PRIMARY KEY(pair_id, id))")
     db.execute("CREATE TABLE IF NOT EXISTS board_operations (pair_id TEXT NOT NULL, id TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(pair_id, id))")
+    db.execute("CREATE TABLE IF NOT EXISTS pairing_sessions (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, creator_hash TEXT NOT NULL UNIQUE, joiner_hash TEXT UNIQUE, token_a_hash TEXT NOT NULL, expires_at INTEGER NOT NULL, recover_until INTEGER)")
+    db.execute("CREATE TABLE IF NOT EXISTS pairing_limits (bucket TEXT NOT NULL, window INTEGER NOT NULL, hits INTEGER NOT NULL, PRIMARY KEY(bucket, window))")
     db.commit()
     return db
+
+
+class PairingError(Exception):
+    def __init__(self, status, message, retry_after=None):
+        super().__init__(message)
+        self.status, self.retry_after = status, retry_after
+
+
+class PairingService:
+    """Single-use invitations. SQLite serializes joins across server processes.
+
+    Each phone saves a random 256-bit recovery secret before sending anything.
+    HMAC derives its credential on demand; only hashes of secrets and credentials
+    are stored. Knowing the six-digit invitation never reveals A's credential.
+    """
+    def __init__(self, db_path):
+        self.db_path = db_path
+
+    @staticmethod
+    def digest(secret):
+        return hashlib.sha256(secret.encode("ascii")).hexdigest()
+
+    @staticmethod
+    def credential(secret, session_id, role):
+        return hmac.new(bytes.fromhex(secret),
+                        f"CoupleDraw pair credential v1:{session_id}:{role}".encode("ascii"),
+                        hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def clean(db, now):
+        db.execute("DELETE FROM pairing_sessions WHERE (joiner_hash IS NULL AND expires_at<=?) OR (joiner_hash IS NOT NULL AND recover_until<=?)", (now, now))
+        db.execute("DELETE FROM pairing_limits WHERE window<?", (now // 60 - 1,))
+
+    @staticmethod
+    def limit(db, action, peer, now):
+        # Use the actual TCP peer, never an untrusted forwarding header. Reverse
+        # proxies should add their own per-client limits before this global cap.
+        window = now // 60
+        buckets = [(action + ":peer:" + peer, 5 if action != "status" else 60),
+                   (action + ":global", 30 if action != "status" else 180)]
+        for bucket, maximum in buckets:
+            row = db.execute("SELECT hits FROM pairing_limits WHERE bucket=? AND window=?", (bucket, window)).fetchone()
+            if row and row[0] >= maximum:
+                raise PairingError(429, "Too many pairing attempts. Wait a minute and try again.", 60 - now % 60)
+        for bucket, _ in buckets:
+            db.execute("INSERT INTO pairing_limits VALUES (?, ?, 1) ON CONFLICT(bucket, window) DO UPDATE SET hits=hits+1", (bucket, window))
+        # Failed guesses must count even when the following operation rolls back.
+        db.commit()
+        db.execute("BEGIN IMMEDIATE")
+
+    def handle(self, action, obj, peer, wait=0):
+        fields = {"secret", "code"} if action == "join" else {"secret"}
+        if (action not in ("create", "join", "status", "cancel") or
+                not isinstance(obj, dict) or set(obj) != fields or
+                not isinstance(obj.get("secret"), str) or
+                not re.fullmatch(r"[0-9a-f]{64}", obj["secret"])):
+            raise PairingError(400, "Invalid pairing request")
+        if action == "join" and (not isinstance(obj["code"], str) or not re.fullmatch(r"[0-9]{6}", obj["code"])):
+            raise PairingError(400, "Enter the six-digit pairing code")
+        secret = obj["secret"]
+        digest = self.digest(secret)
+        deadline = time.monotonic() + min(max(wait, 0), 20)
+        first = True
+        with state_changed:
+            while True:
+                now = int(time.time())
+                with connect(self.db_path) as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    self.clean(db, now)
+                    column = "joiner_hash" if action == "join" else "creator_hash"
+                    row = db.execute(f"SELECT id, code, joiner_hash, expires_at, recover_until FROM pairing_sessions WHERE {column}=?", (digest,)).fetchone()
+                    if action == "cancel":
+                        if (row and row[2] is not None) or db.execute("SELECT 1 FROM pairing_sessions WHERE joiner_hash=?", (digest,)).fetchone():
+                            raise PairingError(409, "Your partner has joined. Finish connecting to keep this pair.")
+                        db.execute("DELETE FROM pairing_sessions WHERE creator_hash=?", (digest,))
+                        db.commit()
+                        state_changed.notify_all()
+                        return {"state": "cancelled"}
+                    if row and row[2] is not None:
+                        role = "B" if action == "join" else "A"
+                        return {"state": "paired", "role": role,
+                                "credential": self.credential(secret, row[0], role)}
+                    if first and not (action == "create" and row):
+                        self.limit(db, action, peer, now)
+                        # Re-read after the limiter commits: another process may
+                        # have joined, cancelled or expired the invitation.
+                        self.clean(db, now)
+                        row = db.execute(f"SELECT id, code, joiner_hash, expires_at, recover_until FROM pairing_sessions WHERE {column}=?", (digest,)).fetchone()
+                        if row and row[2] is not None:
+                            role = "B" if action == "join" else "A"
+                            return {"state": "paired", "role": role,
+                                    "credential": self.credential(secret, row[0], role)}
+                    if action == "create":
+                        if row is None:
+                            if db.execute("SELECT 1 FROM pairing_sessions WHERE joiner_hash=?", (digest,)).fetchone():
+                                raise PairingError(409, "Use a new private pairing secret")
+                            if db.execute("SELECT COUNT(*) FROM pairing_sessions").fetchone()[0] >= MAX_PAIRING_SESSIONS:
+                                raise PairingError(429, "The server has too many recent pairing sessions. Try again later.", 300)
+                            session_id = secrets.token_hex(16)
+                            for _ in range(100):
+                                code = f"{secrets.randbelow(1_000_000):06d}"
+                                if not db.execute("SELECT 1 FROM pairing_sessions WHERE code=?", (code,)).fetchone():
+                                    break
+                            else:
+                                raise PairingError(503, "Could not create an invitation. Try again.")
+                            expires = now + PAIRING_TTL
+                            db.execute("INSERT INTO pairing_sessions VALUES (?, ?, ?, NULL, ?, ?, NULL)",
+                                       (session_id, code, digest, self.digest(self.credential(secret, session_id, "A")), expires))
+                            row = (session_id, code, None, expires, None)
+                        return {"state": "waiting", "code": row[1], "expiresAt": row[3]}
+                    if action == "join":
+                        if db.execute("SELECT 1 FROM pairing_sessions WHERE creator_hash=?", (digest,)).fetchone():
+                            raise PairingError(409, "Use a different phone to join this pair")
+                        invite = db.execute("SELECT id, token_a_hash FROM pairing_sessions WHERE code=? AND joiner_hash IS NULL AND expires_at>?", (obj["code"], now)).fetchone()
+                        if invite is None:
+                            raise PairingError(410, "This code expired or was already used. Ask your partner for a new code.")
+                        credential = self.credential(secret, invite[0], "B")
+                        db.executemany("INSERT INTO members VALUES (?, ?, ?)",
+                                       [(invite[1], invite[0], "A"), (self.digest(credential), invite[0], "B")])
+                        db.execute("UPDATE pairing_sessions SET joiner_hash=?, recover_until=? WHERE id=?", (digest, now + PAIRING_RECOVERY_TTL, invite[0]))
+                        db.commit()
+                        state_changed.notify_all()
+                        return {"state": "paired", "role": "B", "credential": credential}
+                    if row is None:
+                        raise PairingError(410, "This pairing session expired or was cancelled. Create a new code.")
+                    remaining = min(deadline - time.monotonic(), row[3] - time.time())
+                    if remaining <= 0:
+                        return {"state": "waiting", "code": row[1], "expiresAt": row[3]}
+                # No SQLite transaction stays open while the creator waits.
+                state_changed.wait(timeout=min(remaining, 1))
+                first = False
 
 
 def board_update(db, pair_id, since=None):
@@ -623,6 +760,19 @@ def serve(db_path, host, port, media_dir=None):
 
         def do_POST(self):
             self.begin_request()
+            if self.path in ("/v1/pairing/create", "/v1/pairing/join", "/v1/pairing/status", "/v1/pairing/cancel"):
+                try:
+                    obj = self.read_json(1024)
+                    action = self.path.rsplit("/", 1)[1]
+                    wait = 20 if action == "status" and self.headers.get("Prefer") == "wait=20" else 0
+                    result = PairingService(db_path).handle(action, obj, self.client_address[0], wait)
+                except PairingError as error:
+                    return self.reply(error.status, {"error": str(error)},
+                                      {"Retry-After": str(error.retry_after)} if error.retry_after else None)
+                except (ValueError, TypeError):
+                    return self.reply(400, {"error": "Invalid pairing request"})
+                self.client_role = result.get("role", "-")
+                return self.reply(200, result)
             member = self.member()
             if not member:
                 return self.reply(401, {"error": "Invalid pairing token"})
@@ -761,7 +911,8 @@ def serve(db_path, host, port, media_dir=None):
             # Timing ends at the response headers; asynchronous ntfy/APNs delivery is separate.
             elapsed = (time.perf_counter() - getattr(self, "started_at", time.perf_counter())) * 1000
             route = urlsplit(self.path).path
-            if route not in ("/v1/state", "/v1/device", "/v1/draft", "/v1/apply", "/v1/board/seed", "/v1/board/ops"):
+            if route not in ("/v1/state", "/v1/device", "/v1/draft", "/v1/apply", "/v1/board/seed", "/v1/board/ops",
+                             "/v1/pairing/create", "/v1/pairing/join", "/v1/pairing/status", "/v1/pairing/cancel"):
                 route = "<other>"
             timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
             print(f"{timestamp} client={getattr(self, 'client_role', '-')} "
@@ -776,6 +927,7 @@ def serve(db_path, host, port, media_dir=None):
     httpd = SyncHTTPServer((host, port), Handler)
     print(f"CoupleDraw sync listening on {host}:{port}; use HTTP only on trusted local Wi-Fi, HTTPS elsewhere")
     print(f"Photos stored in {media.root}; migrated {migrated} inline photos, removed {removed} unused bytes")
+    print("Create/Join pairing enabled: single-use codes expire in 5 minutes; private recovery lasts 24 hours")
     if not push_configured():
         print("Partner push alerts disabled: set APNS_KEY_FILE, APNS_KEY_ID, APNS_TEAM_ID and APNS_TOPIC")
     if ntfy:
