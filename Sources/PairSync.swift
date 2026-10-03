@@ -28,9 +28,21 @@ private struct ServerState: Decodable {
     let hasPartnerArt: Bool?
     let boardProtocol: Int?
     let mediaProtocol: Int?
+    let mediaInventory: [MediaReceipt]?
+    let mediaRequests: [String]?
     let boardSeedTag: String?
     let board: BoardUpdate?
 }
+
+private struct RelayEnvelope: Decodable {
+    let role: String
+    let mediaProtocol: Int?
+    let mediaInventory: [MediaReceipt]?
+}
+private struct MediaAcknowledgement: Encodable { let receipts: [MediaReceipt] }
+private struct MediaAcknowledgementResult: Decodable { let accepted: [MediaReceipt] }
+private struct MediaRecoveryRequest: Encodable { let mediaIDs: [String] }
+private struct MediaResend: Encodable { let mediaID: String; let data: Data }
 
 private struct SharedDraft: Decodable {
     let role: String
@@ -168,6 +180,7 @@ private enum SyncTransport {
     private var longPollWaitSeconds = 20
     private var retryShortWait = false
     private var supportsStickerSync = false
+    private var supportsMediaRelay = false
     private weak var activeBoard: SharedWhiteboard?
     private var sessionID = UUID()
     private var draftTask: Task<Void, Never>?
@@ -363,7 +376,7 @@ private enum SyncTransport {
         let configuringSession = sessionID
         do {
             try writeToken(newToken)
-            guard let state = try await fetch(force: true) else { throw SyncError.response }
+            guard let state = try await fetch(force: true, store: store) else { throw SyncError.response }
             guard state.role == "A" || state.role == "B" else { throw SyncError.response }
             if changedPair {
                 for slot in CanvasSlot.allCases {
@@ -440,12 +453,12 @@ private enum SyncTransport {
     /// Do not return a stale paired wallpaper if this request fails.
     func refreshForShortcut(store: CanvasStore) async throws {
         guard configured else { return }
-        guard let state = try await fetch(force: true) else { throw SyncError.response }
+        guard let state = try await fetch(force: true, store: store) else { throw SyncError.response }
         role = state.role
         pushConfigured = state.pushConfigured ?? false
         ntfyTopic = state.ntfyTopic
         ntfyBaseURL = state.ntfyBaseURL
-        try await incorporate(state, store: store)
+        try await incorporate(state, store: store, serveMediaRequests: false)
     }
 
     func enablePartnerAlerts() async {
@@ -545,7 +558,7 @@ private enum SyncTransport {
         if let draftTask { await draftTask.value }
         guard let board = store.whiteboard, !board.hasPending, !board.isEditing else { return false }
         do {
-            if let state = try await fetch(force: true) { try await incorporate(state, store: store) }
+            if let state = try await fetch(force: true, store: store) { try await incorporate(state, store: store) }
             return !board.hasPending
         } catch is CancellationError { return false }
         catch { status = "Could not refresh the shared board: \(error.localizedDescription)"; return false }
@@ -583,7 +596,7 @@ private enum SyncTransport {
                 guard let http = response as? HTTPURLResponse else { throw SyncError.response }
                 if http.statusCode == 409 { continue }
                 guard http.statusCode == 200 else { throw serverError(data) }
-                let item = try JSONDecoder().decode(SyncedRevision.self, from: data)
+                let item = try store.decodeSynced(SyncedRevision.self, from: data)
                 let current = store.record(.together)
                 let unchangedBackground = current.backgroundHex == record.backgroundHex &&
                     current.backgroundPhoto == record.backgroundPhoto && current.stickers == record.stickers
@@ -592,6 +605,7 @@ private enum SyncTransport {
                                            keepSharedBackground: !unchangedBackground)
                     versions[.together] = item.revision
                 }
+                try await retainPublishedMedia(item, response: http, store: store)
                 if unchangedBackground { dirty.remove(.together) }
                 persistState()
                 status = "Our art saved for both phones · revision \(item.revision)"
@@ -625,7 +639,8 @@ private enum SyncTransport {
     func refresh(store: CanvasStore, waitForChange: Bool = false) async {
         guard configured else { return }
         do {
-            guard let state = try await fetch(waitForChange: waitForChange) else {
+            guard let state = try await fetch(waitForChange: waitForChange, store: store) else {
+                try await synchronizeRelayMedia([], store: store)
                 scheduleSharedDraft(store: store)
                 return
             }
@@ -644,7 +659,12 @@ private enum SyncTransport {
             knownSnapshotVersions = [:]
             knownDraftVersions = [:]
             knowsSharedBase = false
-            if waitForChange {
+            if case SyncError.mediaPending = error {
+                // Recovery only checks while open. Do not turn a missing photo
+                // into the normal rapid retry used for a proxy timeout.
+                longPollSupported = false
+                retryShortWait = false
+            } else if waitForChange {
                 longPollAttempted = true
                 longPollSupported = false
                 // Some reverse proxies close idle connections before 20 seconds.
@@ -662,9 +682,10 @@ private enum SyncTransport {
             "Connected as \(role) · checking every 30s"
     }
 
-    private func incorporate(_ state: ServerState, store: CanvasStore) async throws {
+    private func incorporate(_ state: ServerState, store: CanvasStore, serveMediaRequests: Bool = true) async throws {
         let session = sessionID
-        supportsStickerSync = state.mediaProtocol == 1
+        supportsStickerSync = state.mediaProtocol == 1 || state.mediaProtocol == 2
+        supportsMediaRelay = state.mediaProtocol == 2
         if state.boardProtocol != 1 {
             throw SyncError.server("Update the Python server to this source version to enable the shared whiteboard.")
         }
@@ -719,11 +740,68 @@ private enum SyncTransport {
             }
         }
         guard session == sessionID, !Task.isCancelled else { throw CancellationError() }
+        if supportsMediaRelay {
+            guard let inventory = state.mediaInventory else { throw SyncError.response }
+            let originals = state.items + (state.sharedBase.map { [$0] } ?? [])
+            try store.retainRelayMedia(originals, inventory: inventory, identity: boardIdentity, complete: true)
+            let requests = state.mediaRequests ?? []
+            let identifiers = Set(inventory.flatMap(\.mediaIDs))
+            guard requests.count <= 52, Set(requests).count == requests.count,
+                  Set(requests).isSubset(of: identifiers) else { throw SyncError.response }
+        }
         // Only acknowledge payloads once decoding, rendering and disk writes
         // succeeded. A failure must remain eligible for the next refresh.
         for item in state.items { knownSnapshotVersions[item.source] = max(knownSnapshotVersions[item.source] ?? 0, item.revision) }
         for draft in state.drafts ?? [] { knownDraftVersions[draft.role] = draft.revision }
         if state.drafts != nil { knowsSharedBase = true }
+        try await synchronizeRelayMedia(serveMediaRequests ? state.mediaRequests ?? [] : [], store: store)
+    }
+
+    private func retainPublishedMedia(_ item: SyncedRevision, response: HTTPURLResponse, store: CanvasStore) async throws {
+        guard response.value(forHTTPHeaderField: "X-CoupleDraw-Media") == "2" else { return }
+        supportsMediaRelay = true
+        try store.retainRelayMedia([item], inventory: [MediaReceipt(item)], identity: boardIdentity, complete: false)
+        try await synchronizeRelayMedia([], store: store)
+    }
+
+    /// Receipt retries are independent of wallpaper rendering. A failed POST
+    /// leaves a durable pending receipt and the server keeps its original.
+    private func synchronizeRelayMedia(_ requests: [String], store: CanvasStore) async throws {
+        guard supportsMediaRelay else { return }
+        let session = sessionID
+        let identity = boardIdentity
+        do {
+            for ident in requests {
+                guard session == sessionID, !Task.isCancelled else { throw CancellationError() }
+                guard let image = try? store.relayImage(ident) else { continue }
+                var request = try authorizedRequest(path: "/v1/media/restore")
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try JSONEncoder().encode(MediaResend(mediaID: ident, data: image))
+                let (data, response) = try await send(request)
+                guard let http = response as? HTTPURLResponse else { throw SyncError.response }
+                if http.statusCode == 404 || http.statusCode == 409 { continue } // Superseded while resending.
+                guard http.statusCode == 200 else { throw serverError(data) }
+            }
+            let pending = try store.pendingRelayReceipts(identity: identity)
+            guard !pending.isEmpty else { return }
+            var request = try authorizedRequest(path: "/v1/media/ack")
+            request.httpMethod = "POST"
+            request.timeoutInterval = 5
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(MediaAcknowledgement(receipts: pending))
+            let (data, response) = try await send(request)
+            guard session == sessionID, !Task.isCancelled else { throw CancellationError() }
+            guard let http = response as? HTTPURLResponse else { throw SyncError.response }
+            guard http.statusCode == 200 else { throw serverError(data) }
+            let accepted = try JSONDecoder().decode(MediaAcknowledgementResult.self, from: data).accepted
+            guard accepted.allSatisfy({ pending.contains($0) }) else { throw SyncError.response }
+            try store.confirmRelayReceipts(accepted, identity: identity)
+        } catch is CancellationError { throw CancellationError() }
+        catch {
+            // The originals and pending receipts remain on disk. Retry after
+            // the next foreground state response or Shortcut invocation.
+        }
     }
 
     private func showLocalPartnerAlert(for item: SyncedRevision) async {
@@ -766,13 +844,14 @@ private enum SyncTransport {
                 return
             }
             guard http.statusCode == 200 else { throw serverError(data) }
-            let item = try JSONDecoder().decode(SyncedRevision.self, from: data)
+            let item = try store.decodeSynced(SyncedRevision.self, from: data)
             versions[slot] = max(versions[slot] ?? 0, item.revision)
             if item.backgroundPhoto != record.backgroundPhoto {
                 persistState()
                 status = "Saved locally; update the Python server to sync photo backgrounds."
                 return
             }
+            try await retainPublishedMedia(item, response: http, store: store)
             let unchanged = store.record(slot) == record
             if unchanged { dirty.remove(slot) }
             persistState()
@@ -782,7 +861,7 @@ private enum SyncTransport {
         catch { status = "Saved locally; sync failed: \(error.localizedDescription)" }
     }
 
-    private func fetch(force: Bool = false, waitForChange: Bool = false) async throws -> ServerState? {
+    private func fetch(force: Bool = false, waitForChange: Bool = false, store: CanvasStore) async throws -> ServerState? {
         let session = sessionID
         var request = try authorizedRequest(path: "/v1/state")
         if let activeBoard, activeBoard.revision > 0, !force {
@@ -822,7 +901,23 @@ private enum SyncTransport {
             return nil
         }
         guard http.statusCode == 200 else { throw serverError(data) }
-        let state = try JSONDecoder().decode(ServerState.self, from: data)
+        let envelope = try JSONDecoder().decode(RelayEnvelope.self, from: data)
+        guard envelope.role == "A" || envelope.role == "B" else { throw SyncError.response }
+        if envelope.mediaProtocol == 2 {
+            guard let inventory = envelope.mediaInventory else { throw SyncError.response }
+            let missing = try store.missingRelayMedia(in: data, inventory: inventory, identity: boardIdentity)
+            if !missing.isEmpty {
+                try store.resetRelayReceipts(identity: boardIdentity)
+                var recovery = try authorizedRequest(path: "/v1/media/request")
+                recovery.httpMethod = "POST"
+                recovery.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                recovery.httpBody = try JSONEncoder().encode(MediaRecoveryRequest(mediaIDs: missing))
+                let (body, result) = try await send(recovery)
+                guard let response = result as? HTTPURLResponse, response.statusCode == 200 else { throw serverError(body) }
+                throw SyncError.mediaPending
+            }
+        }
+        let state = try store.decodeSynced(ServerState.self, from: data)
         guard state.role == "A" || state.role == "B" else { throw SyncError.response }
         stateETag = http.value(forHTTPHeaderField: "ETag")
         return state
@@ -835,6 +930,7 @@ private enum SyncTransport {
         request.timeoutInterval = 15
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        request.setValue("2", forHTTPHeaderField: "X-CoupleDraw-Media")
         return request
     }
 
@@ -860,13 +956,14 @@ private enum SyncTransport {
     }
 
     enum SyncError: LocalizedError {
-        case configuration, invalidServerURL, missingToken, response, server(String)
+        case configuration, invalidServerURL, missingToken, response, mediaPending, server(String)
         var errorDescription: String? {
             switch self {
             case .configuration: return "Check your server URL and pairing token."
             case .invalidServerURL: return "Enter an HTTPS URL, or an HTTP URL using a private LAN or Tailscale IP address. Do not include an API path."
             case .missingToken: return "Enter your A or B pairing token from the create-pair command on your server."
             case .response: return "Invalid sync server response."
+            case .mediaPending: return "Waiting for an original photo or sticker. Open CoupleDraw on your partner's phone to resend it, or ask them to Apply it again."
             case .server(let message): return message
             }
         }

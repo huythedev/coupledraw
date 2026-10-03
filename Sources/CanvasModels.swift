@@ -122,14 +122,22 @@ struct BackgroundPhoto: Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case data, file, zoom, offsetX, offsetY, rotation
+        case data, file, mediaID, zoom, offsetX, offsetY, rotation
     }
 
     init(from decoder: Decoder) throws {
         let box = try decoder.container(keyedBy: CodingKeys.self)
-        if let root = decoder.userInfo[.coupleDrawMediaRoot] as? URL,
+        if decoder.userInfo[.coupleDrawNetworkMedia] as? Bool != true,
+           let root = decoder.userInfo[.coupleDrawMediaRoot] as? URL,
            let file = try box.decodeIfPresent(String.self, forKey: .file) {
             data = try LocalMediaFiles.read(file, root: root)
+        } else if let ident = try box.decodeIfPresent(String.self, forKey: .mediaID) {
+            if let bytes = try box.decodeIfPresent(Data.self, forKey: .data) {
+                guard LocalMediaFiles.identifier(bytes) == ident else { throw CocoaError(.fileReadCorruptFile) }
+                data = bytes
+            } else if let root = decoder.userInfo[.coupleDrawMediaRoot] as? URL {
+                data = try LocalMediaFiles.read(ident, root: root)
+            } else { throw CocoaError(.fileReadNoSuchFile) }
         } else {
             data = try box.decode(Data.self, forKey: .data)
         }
@@ -168,13 +176,21 @@ struct CanvasSticker: Codable, Identifiable, Equatable {
         self.centerY = centerY; self.width = width; self.rotation = rotation
     }
 
-    private enum CodingKeys: String, CodingKey { case id, data, file, centerX, centerY, width, rotation }
+    private enum CodingKeys: String, CodingKey { case id, data, file, mediaID, centerX, centerY, width, rotation }
     init(from decoder: Decoder) throws {
         let box = try decoder.container(keyedBy: CodingKeys.self)
         id = try box.decode(UUID.self, forKey: .id)
-        if let root = decoder.userInfo[.coupleDrawMediaRoot] as? URL,
+        if decoder.userInfo[.coupleDrawNetworkMedia] as? Bool != true,
+           let root = decoder.userInfo[.coupleDrawMediaRoot] as? URL,
            let file = try box.decodeIfPresent(String.self, forKey: .file) {
             data = try LocalMediaFiles.read(file, root: root)
+        } else if let ident = try box.decodeIfPresent(String.self, forKey: .mediaID) {
+            if let bytes = try box.decodeIfPresent(Data.self, forKey: .data) {
+                guard LocalMediaFiles.identifier(bytes) == ident else { throw CocoaError(.fileReadCorruptFile) }
+                data = bytes
+            } else if let root = decoder.userInfo[.coupleDrawMediaRoot] as? URL {
+                data = try LocalMediaFiles.read(ident, root: root)
+            } else { throw CocoaError(.fileReadNoSuchFile) }
         } else { data = try box.decode(Data.self, forKey: .data) }
         centerX = try box.decode(Double.self, forKey: .centerX)
         centerY = try box.decode(Double.self, forKey: .centerY)
@@ -194,6 +210,7 @@ struct CanvasSticker: Codable, Identifiable, Equatable {
 
 extension CodingUserInfoKey {
     static let coupleDrawMediaRoot = CodingUserInfoKey(rawValue: "CoupleDraw.mediaRoot")!
+    static let coupleDrawNetworkMedia = CodingUserInfoKey(rawValue: "CoupleDraw.networkMedia")!
 }
 
 enum LocalMediaFiles {
@@ -222,8 +239,18 @@ enum LocalMediaFiles {
         try FileManager.default.createDirectory(at: folder(root), withIntermediateDirectories: true)
         let ident = identifier(data)
         let url = try path(ident, root: root)
-        if (try? Data(contentsOf: url)) != data { try data.write(to: url, options: .atomic) }
+        if (try? Data(contentsOf: url)) != data { try writeDurably(data, to: url) }
         return ident
+    }
+    static func synchronize(_ url: URL) throws {
+        let fd = open(url.path, O_RDONLY)
+        guard fd >= 0 else { throw CocoaError(.fileReadUnknown) }
+        defer { close(fd) }
+        guard fsync(fd) == 0 else { throw CocoaError(.fileWriteUnknown) }
+    }
+    static func writeDurably(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: .atomic)
+        try synchronize(url)
     }
     static func read(_ ident: String, root: URL) throws -> Data {
         let data = try Data(contentsOf: path(ident, root: root))
@@ -238,6 +265,34 @@ enum LocalMediaFiles {
         guard flock(fd, LOCK_EX) == 0 else { throw CocoaError(.fileWriteUnknown) }
         defer { flock(fd, LOCK_UN) }
         return try action()
+    }
+}
+
+/// A receipt covers every original in one immutable server revision. A late
+/// receipt for an older revision can never authorize deleting a new upload.
+struct MediaReceipt: Codable, Equatable {
+    let source: String
+    let revision: Int
+    let mediaIDs: [String]
+
+    init(source: String, revision: Int, mediaIDs: [String]) {
+        self.source = source
+        self.revision = revision
+        self.mediaIDs = Array(Set(mediaIDs)).sorted()
+    }
+
+    init(_ item: SyncedRevision, source: String? = nil) {
+        self.init(source: source ?? item.source, revision: item.revision,
+                  mediaIDs: ([item.backgroundPhoto?.data].compactMap { $0 } + (item.stickers ?? []).map(\.data))
+                    .map(LocalMediaFiles.identifier))
+    }
+
+    func validate() throws {
+        guard ["a", "b", "together", "base"].contains(source), revision > 0,
+              mediaIDs.count <= 13, Set(mediaIDs).count == mediaIDs.count,
+              mediaIDs.allSatisfy({ $0.count == 64 && $0.allSatisfy { "0123456789abcdef".contains($0) } }) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
     }
 }
 

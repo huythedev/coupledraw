@@ -390,9 +390,17 @@ import UIKit
             } else if let array = value as? [Any] { array.forEach(collect) }
         }
         let manifests = CanvasSlot.allCases.map { root.appendingPathComponent("\($0.rawValue).json") }
-            + [root.appendingPathComponent("revisions.json")]
+            + [root.appendingPathComponent("revisions.json"), relayMediaURL]
         for url in manifests where fm.fileExists(atPath: url.path) {
-            collect(try JSONSerialization.jsonObject(with: Data(contentsOf: url)))
+            let contents = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
+            collect(contents)
+            if url == relayMediaURL {
+                let manifest = try JSONDecoder().decode(RelayMediaManifest.self, from: Data(contentsOf: url))
+                for receipt in manifest.snapshots.values {
+                    try receipt.validate()
+                    used.formUnion(receipt.mediaIDs)
+                }
+            }
         }
         let cached = (try? fm.contentsOfDirectory(at: wallpaperCache, includingPropertiesForKeys: nil)) ?? []
         let legacy = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
@@ -421,6 +429,138 @@ import UIKit
             BackgroundPhotoLayout.clearImageCache()
             return removed
         }
+    }
+
+    private var relayMediaURL: URL { root.appendingPathComponent("relay-media.json") }
+
+    private struct RelayMediaManifest: Codable {
+        let identity: String
+        var snapshots: [String: MediaReceipt] = [:]
+        var confirmed: [String: MediaReceipt] = [:]
+    }
+
+    private func relayManifest(identity: String) throws -> RelayMediaManifest {
+        guard FileManager.default.fileExists(atPath: relayMediaURL.path) else {
+            return RelayMediaManifest(identity: identity)
+        }
+        let saved = try JSONDecoder().decode(RelayMediaManifest.self, from: Data(contentsOf: relayMediaURL))
+        return saved.identity == identity ? saved : RelayMediaManifest(identity: identity)
+    }
+
+    func decodeSynced<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        try LocalMediaFiles.withLock(root: root) {
+            let decoder = JSONDecoder()
+            decoder.userInfo[.coupleDrawMediaRoot] = root
+            decoder.userInfo[.coupleDrawNetworkMedia] = true
+            return try decoder.decode(type, from: data)
+        }
+    }
+
+    /// Look at the full inventory even when unchanged canvases were omitted.
+    /// Inline originals in this response need no recovery request.
+    func missingRelayMedia(in payload: Data, inventory: [MediaReceipt], identity: String) throws -> [String] {
+        guard inventory.count <= 4, Set(inventory.map(\.source)).count == inventory.count else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        for receipt in inventory { try receipt.validate() }
+        let json = try JSONSerialization.jsonObject(with: payload) as? [String: Any] ?? [:]
+        var inline = Set<String>()
+        let documents = (json["items"] as? [[String: Any]] ?? [])
+            + ((json["sharedBase"] as? [String: Any]).map { [$0] } ?? [])
+        for document in documents {
+            let images = (document["stickers"] as? [[String: Any]] ?? [])
+                + ((document["backgroundPhoto"] as? [String: Any]).map { [$0] } ?? [])
+            for image in images {
+                if let ident = image["mediaID"] as? String, let encoded = image["data"] as? String {
+                    guard let bytes = Data(base64Encoded: encoded), LocalMediaFiles.identifier(bytes) == ident else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                    inline.insert(ident)
+                }
+            }
+        }
+        return try LocalMediaFiles.withLock(root: root) {
+            let trusted = Set(try relayManifest(identity: identity).snapshots.values.flatMap(\.mediaIDs))
+            return Set(inventory.flatMap(\.mediaIDs)).filter {
+                !inline.contains($0) && (!trusted.contains($0) || (try? LocalMediaFiles.read($0, root: root)) == nil)
+            }.sorted()
+        }
+    }
+
+    /// Originals that a dirty local draft did not incorporate still need a
+    /// protected disk reference before the server is allowed to delete them.
+    func retainRelayMedia(_ items: [SyncedRevision], inventory: [MediaReceipt],
+                          identity: String, complete: Bool) throws {
+        guard inventory.count <= 4, Set(inventory.map(\.source)).count == inventory.count else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        for receipt in inventory { try receipt.validate() }
+        try LocalMediaFiles.withLock(root: root) {
+            var manifest = try relayManifest(identity: identity)
+            for item in items {
+                let matching = inventory.filter {
+                    ($0.source == item.source || $0.source == "base") && $0.revision == item.revision
+                }
+                let actual = MediaReceipt(item)
+                guard matching.contains(where: { Set($0.mediaIDs) == Set(actual.mediaIDs) }) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                if let photo = item.backgroundPhoto { _ = try LocalMediaFiles.store(photo.data, root: root) }
+                for sticker in item.stickers ?? [] { _ = try LocalMediaFiles.store(sticker.data, root: root) }
+            }
+            for receipt in inventory {
+                guard manifest.snapshots[receipt.source] == receipt || items.contains(where: {
+                    ($0.source == receipt.source || receipt.source == "base" && $0.source == "together") &&
+                        $0.revision == receipt.revision && Set(MediaReceipt($0).mediaIDs) == Set(receipt.mediaIDs)
+                }) else { throw CocoaError(.fileReadCorruptFile) }
+                for ident in receipt.mediaIDs {
+                    _ = try LocalMediaFiles.read(ident, root: root)
+                    try LocalMediaFiles.synchronize(LocalMediaFiles.path(ident, root: root))
+                }
+                if receipt.revision >= (manifest.snapshots[receipt.source]?.revision ?? 0) {
+                    manifest.snapshots[receipt.source] = receipt
+                }
+            }
+            if complete && !inventory.contains(where: { $0.source == "base" }) {
+                manifest.snapshots.removeValue(forKey: "base")
+                manifest.confirmed.removeValue(forKey: "base")
+            }
+            try LocalMediaFiles.writeDurably(JSONEncoder().encode(manifest), to: relayMediaURL)
+        }
+    }
+
+    func pendingRelayReceipts(identity: String) throws -> [MediaReceipt] {
+        try LocalMediaFiles.withLock(root: root) {
+            let manifest = try relayManifest(identity: identity)
+            return try manifest.snapshots.values.filter {
+                try $0.validate()
+                guard !$0.mediaIDs.isEmpty, manifest.confirmed[$0.source] != $0 else { return false }
+                for ident in $0.mediaIDs { _ = try LocalMediaFiles.read(ident, root: root) }
+                return true
+            }.sorted { $0.source < $1.source }
+        }
+    }
+
+    func confirmRelayReceipts(_ receipts: [MediaReceipt], identity: String) throws {
+        try LocalMediaFiles.withLock(root: root) {
+            var manifest = try relayManifest(identity: identity)
+            for receipt in receipts where manifest.snapshots[receipt.source] == receipt {
+                manifest.confirmed[receipt.source] = receipt
+            }
+            try LocalMediaFiles.writeDurably(JSONEncoder().encode(manifest), to: relayMediaURL)
+        }
+    }
+
+    func resetRelayReceipts(identity: String) throws {
+        try LocalMediaFiles.withLock(root: root) {
+            var manifest = try relayManifest(identity: identity)
+            manifest.confirmed = [:]
+            try LocalMediaFiles.writeDurably(JSONEncoder().encode(manifest), to: relayMediaURL)
+        }
+    }
+
+    func relayImage(_ ident: String) throws -> Data {
+        try LocalMediaFiles.withLock(root: root) { try LocalMediaFiles.read(ident, root: root) }
     }
 
     func deleteAllRevisions(on slot: CanvasSlot) {

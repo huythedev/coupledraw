@@ -691,6 +691,383 @@ import UIKit
         XCTAssertTrue(UserDefaults.standard.stringArray(forKey: "syncDirty")?.contains(CanvasSlot.together.rawValue) == true)
     }
 
+    private func relayRevision(source: String = "b", revision: Int = 1, drawingData: Data = Data(),
+                               color: UIColor = .red) throws -> SyncedRevision {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 12, height: 12)).image { context in
+            color.setFill(); context.fill(CGRect(x: 0, y: 0, width: 12, height: 12))
+        }
+        return SyncedRevision(source: source, revision: revision, author: source == "b" ? "B" : "A",
+                              backgroundHex: "#123456",
+                              backgroundPhoto: BackgroundPhoto(data: try XCTUnwrap(image.jpegData(compressionQuality: 0.8)),
+                                                               zoom: 0.6, offsetX: 0.1, rotation: 20),
+                              drawingData: drawingData, drawingHeight: 844,
+                              stickers: [CanvasSticker(data: try XCTUnwrap(image.pngData()), centerX: 0.3,
+                                                       centerY: 0.7, width: 0.2, rotation: -30)])
+    }
+
+    private func relayReply(_ request: URLRequest, items: [SyncedRevision] = [], referenceOnly: Bool = false,
+                            inventory: [MediaReceipt]? = nil, requests: [String] = [],
+                            etag: String = "\"relay\"") throws -> (Data, URLResponse) {
+        var documents = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(items)) as? [[String: Any]])
+        for index in documents.indices {
+            if var photo = documents[index]["backgroundPhoto"] as? [String: Any], let data = items[index].backgroundPhoto?.data {
+                photo["mediaID"] = LocalMediaFiles.identifier(data)
+                if referenceOnly { photo.removeValue(forKey: "data") }
+                documents[index]["backgroundPhoto"] = photo
+            }
+            var stickers = documents[index]["stickers"] as? [[String: Any]] ?? []
+            for stickerIndex in stickers.indices {
+                stickers[stickerIndex]["mediaID"] = LocalMediaFiles.identifier(try XCTUnwrap(items[index].stickers)[stickerIndex].data)
+                if referenceOnly { stickers[stickerIndex].removeValue(forKey: "data") }
+            }
+            documents[index]["stickers"] = stickers
+        }
+        let state: [String: Any] = ["role": "A", "items": documents, "pushConfigured": false,
+                                   "hasPartnerArt": items.contains { $0.source == "b" }, "boardProtocol": 1,
+                                   "mediaProtocol": 2, "drafts": [], "mediaRequests": requests,
+                                   "mediaInventory": try JSONSerialization.jsonObject(with: JSONEncoder().encode(inventory ?? items.map { MediaReceipt($0) })),
+                                   "board": ["revision": 1, "strokes": [], "removed": []]]
+        return try pairingHTTPReply(request, state, headers: ["ETag": etag, "X-CoupleDraw-Long-Poll": "1"])
+    }
+
+    private func relayAckReply(_ request: URLRequest) throws -> (Data, URLResponse) {
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        return try pairingHTTPReply(request, ["accepted": try XCTUnwrap(body["receipts"]), "removedBytes": 0])
+    }
+
+    func testRelayOriginalsSurviveCacheClearAndRestartWithoutAVisibleCanvasCopy() throws {
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = try relayRevision()
+        let receipt = MediaReceipt(item)
+        try store.retainRelayMedia([item], inventory: [receipt], identity: "pair", complete: true)
+        XCTAssertNil(store.record(.second).backgroundPhoto) // A dirty draft may have skipped incorporation.
+        let orphan = try LocalMediaFiles.store(Data([7, 8, 9]), root: root)
+        XCTAssertGreaterThan(try store.clearCache(), 0)
+        XCTAssertThrowsError(try LocalMediaFiles.read(orphan, root: root))
+        let restarted = CanvasStore(root: root)
+        XCTAssertEqual(try restarted.pendingRelayReceipts(identity: "pair"), [receipt])
+        let request = URLRequest(url: URL(string: "https://relay.invalid/v1/state")!)
+        let (payload, _) = try relayReply(request, items: [item], referenceOnly: true)
+        XCTAssertTrue(try restarted.missingRelayMedia(in: payload, inventory: [receipt], identity: "pair").isEmpty)
+        struct State: Decodable { let items: [SyncedRevision] }
+        let restored = try restarted.decodeSynced(State.self, from: payload).items[0]
+        XCTAssertEqual(restored.backgroundPhoto, item.backgroundPhoto)
+        XCTAssertEqual(restored.stickers, item.stickers)
+        try restarted.acceptRemote(restored, on: .second, localRole: "A")
+        XCTAssertNotNil(try WallpaperRenderer.render(restarted.record(.second)).pngData())
+        try restarted.confirmRelayReceipts([receipt], identity: "pair")
+        XCTAssertTrue(try CanvasStore(root: root).pendingRelayReceipts(identity: "pair").isEmpty)
+        _ = try restarted.clearCache()
+        XCTAssertEqual(try restarted.relayImage(receipt.mediaIDs[0]), try store.relayImage(receipt.mediaIDs[0]))
+    }
+
+    func testReplacingRelayRevisionReleasesOnlyUnusedOldOriginalsAndIgnoresLateConfirmation() throws {
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = try relayRevision()
+        let next = try relayRevision(revision: 2, color: .blue)
+        let own = try relayRevision(source: "a", color: .green)
+        try store.retainRelayMedia([old, own], inventory: [MediaReceipt(old), MediaReceipt(own)], identity: "pair", complete: true)
+        try store.retainRelayMedia([next], inventory: [MediaReceipt(next)], identity: "pair", complete: false)
+        try store.confirmRelayReceipts([MediaReceipt(old)], identity: "pair")
+        XCTAssertEqual(Set(try store.pendingRelayReceipts(identity: "pair").map(\.revision)), [1, 2])
+        XCTAssertGreaterThan(try store.clearCache(), 0)
+        for ident in MediaReceipt(old).mediaIDs { XCTAssertThrowsError(try store.relayImage(ident)) }
+        for ident in MediaReceipt(next).mediaIDs + MediaReceipt(own).mediaIDs { XCTAssertNotNil(try store.relayImage(ident)) }
+        try store.retainRelayMedia([old], inventory: [MediaReceipt(old)], identity: "pair", complete: false)
+        XCTAssertEqual(try store.pendingRelayReceipts(identity: "pair").first { $0.source == "b" }?.revision, 2)
+    }
+
+    func testRelayHashMismatchAndMissingOriginalCannotBeAcknowledged() throws {
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = try relayRevision()
+        let receipt = MediaReceipt(item)
+        let request = URLRequest(url: URL(string: "https://relay.invalid/v1/state")!)
+        let (payload, _) = try relayReply(request, items: [item])
+        var state = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        var documents = try XCTUnwrap(state["items"] as? [[String: Any]])
+        var photo = try XCTUnwrap(documents[0]["backgroundPhoto"] as? [String: Any])
+        photo["data"] = Data([1, 2, 3]).base64EncodedString()
+        documents[0]["backgroundPhoto"] = photo
+        state["items"] = documents
+        struct State: Decodable { let items: [SyncedRevision] }
+        XCTAssertThrowsError(try store.decodeSynced(State.self, from: JSONSerialization.data(withJSONObject: state)))
+        try store.retainRelayMedia([item], inventory: [receipt], identity: "pair", complete: true)
+        try FileManager.default.removeItem(at: LocalMediaFiles.path(receipt.mediaIDs[0], root: root))
+        XCTAssertThrowsError(try store.pendingRelayReceipts(identity: "pair"))
+        let (references, _) = try relayReply(request, items: [item], referenceOnly: true)
+        XCTAssertEqual(try store.missingRelayMedia(in: references, inventory: [receipt], identity: "pair"), [receipt.mediaIDs[0]])
+    }
+
+    func testReceivedMediaIsAcknowledgedAfterPersistenceAndShortcutWorksAfterDeletion() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = try relayRevision()
+        var phase = 0
+        var token = ""
+        var acknowledgements = 0
+        let transport: (URLRequest) async throws -> (Data, URLResponse) = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-CoupleDraw-Media"), "2")
+            if request.url?.path == "/v1/media/ack" {
+                acknowledgements += 1
+                XCTAssertEqual(CanvasStore(root: root).record(.second).backgroundPhoto, item.backgroundPhoto)
+                XCTAssertEqual(store.revisions.first?.document.stickers, item.stickers)
+                _ = try store.clearCache()
+                for ident in MediaReceipt(item).mediaIDs { XCTAssertNotNil(try store.relayImage(ident)) }
+                return try self.relayAckReply(request)
+            }
+            return try self.relayReply(request, items: phase == 0 ? [] : [item], referenceOnly: phase == 2)
+        }
+        let sync = PairSync(transport: transport, readToken: { token }, writeToken: { token = $0 })
+        defer { sync.suspend() }
+        try await sync.configure(endpoint: "https://relay.invalid", token: "private-phone-A", store: store)
+        sync.stop()
+        phase = 1
+        await sync.refresh(store: store)
+        XCTAssertEqual(acknowledgements, 1)
+        phase = 2
+        sync.suspend()
+        let restarted = PairSync(transport: transport, readToken: { token }, writeToken: { token = $0 })
+        defer { restarted.suspend() }
+        let reloaded = CanvasStore(root: root)
+        try await restarted.refreshForShortcut(store: reloaded)
+        XCTAssertEqual(reloaded.record(.second).backgroundPhoto, item.backgroundPhoto)
+        XCTAssertEqual(acknowledgements, 1) // Confirmation survives process restart.
+        XCTAssertNotNil(try Data(contentsOf: reloaded.cachedWallpaperURL(for: XCTUnwrap(reloaded.revisions.first))))
+    }
+
+    func testFailedRenderingAndManifestWritesNeverSendMediaReceipts() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var phase = 0
+        var token = ""
+        var acknowledgements = 0
+        let sync = PairSync(transport: { request in
+            if request.url?.path == "/v1/media/ack" {
+                acknowledgements += 1
+                return try self.relayAckReply(request)
+            }
+            let item = try self.relayRevision(drawingData: phase == 1 ? Data([1, 2, 3]) : Data())
+            return try self.relayReply(request, items: phase == 0 ? [] : [item])
+        }, readToken: { token }, writeToken: { token = $0 })
+        defer { sync.suspend() }
+        try await sync.configure(endpoint: "https://relay.invalid", token: "private-phone-A", store: store)
+        sync.stop()
+        phase = 1
+        await sync.refresh(store: store)
+        XCTAssertEqual(acknowledgements, 0)
+        XCTAssertTrue(store.revisions.isEmpty)
+        phase = 2
+        let manifest = root.appendingPathComponent("relay-media.json")
+        try FileManager.default.removeItem(at: manifest)
+        try FileManager.default.createDirectory(at: manifest, withIntermediateDirectories: true)
+        await sync.refresh(store: store)
+        XCTAssertEqual(acknowledgements, 0)
+        XCTAssertTrue(sync.status.hasPrefix("Sync paused:"))
+        try FileManager.default.removeItem(at: manifest)
+        await sync.refresh(store: store)
+        XCTAssertEqual(acknowledgements, 1)
+        XCTAssertEqual(store.record(.second).backgroundHex, "#123456")
+    }
+
+    func testFailedReceiptRetriesOnUnchangedStateAndKeepsPendingConfirmationOnDisk() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = try relayRevision()
+        var phase = 0
+        var token = ""
+        var acknowledgements = 0
+        let identity = LocalMediaFiles.identifier(Data("https://relay.invalid|private-phone-A".utf8))
+        let sync = PairSync(transport: { request in
+            if request.url?.path == "/v1/media/ack" {
+                acknowledgements += 1
+                if phase == 1 { throw URLError(.networkConnectionLost) }
+                return try self.relayAckReply(request)
+            }
+            if phase == 2 {
+                return (Data(), try XCTUnwrap(HTTPURLResponse(url: XCTUnwrap(request.url), statusCode: 304,
+                                                            httpVersion: "HTTP/1.1", headerFields: nil)))
+            }
+            return try self.relayReply(request, items: phase == 0 ? [] : [item])
+        }, readToken: { token }, writeToken: { token = $0 })
+        defer { sync.suspend() }
+        try await sync.configure(endpoint: "https://relay.invalid", token: "private-phone-A", store: store)
+        sync.stop()
+        phase = 1
+        await sync.refresh(store: store)
+        XCTAssertEqual(acknowledgements, 1)
+        XCTAssertEqual(try CanvasStore(root: root).pendingRelayReceipts(identity: identity), [MediaReceipt(item)])
+        phase = 2
+        await sync.refresh(store: store)
+        XCTAssertEqual(acknowledgements, 2)
+        XCTAssertTrue(try CanvasStore(root: root).pendingRelayReceipts(identity: identity).isEmpty)
+    }
+
+    func testMissingOriginalRequestsResendWithoutReturningAPartialShortcutWallpaper() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = try relayRevision()
+        var phase = 0
+        var token = ""
+        var requests = 0
+        var acknowledgements = 0
+        let sync = PairSync(transport: { request in
+            if request.url?.path == "/v1/media/request" {
+                requests += 1
+                let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: [String]])
+                XCTAssertEqual(body["mediaIDs"], MediaReceipt(item).mediaIDs)
+                return try self.pairingHTTPReply(request, ["queued": true])
+            }
+            if request.url?.path == "/v1/media/ack" {
+                acknowledgements += 1
+                return try self.relayAckReply(request)
+            }
+            return try self.relayReply(request, items: phase == 0 ? [] : [item], referenceOnly: phase == 1)
+        }, readToken: { token }, writeToken: { token = $0 })
+        defer { sync.suspend() }
+        try await sync.configure(endpoint: "https://relay.invalid", token: "private-phone-A", store: store)
+        sync.stop()
+        phase = 1
+        do { try await sync.refreshForShortcut(store: store); XCTFail("Missing media must stop the wallpaper action") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("resend")) }
+        XCTAssertEqual(requests, 1)
+        XCTAssertEqual(acknowledgements, 0)
+        XCTAssertTrue(store.revisions.isEmpty)
+        phase = 2
+        try await sync.refreshForShortcut(store: store)
+        XCTAssertEqual(acknowledgements, 1)
+        XCTAssertEqual(store.record(.second).backgroundPhoto, item.backgroundPhoto)
+    }
+
+    func testResendUsesOnlyCurrentPairInventoryAndShortcutSkipsDonorUploads() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = try relayRevision(source: "a")
+        let ident = try XCTUnwrap(item.backgroundPhoto).data
+        var phase = 0
+        var token = ""
+        var resends = 0
+        let sync = PairSync(transport: { request in
+            if request.url?.path == "/v1/media/ack" { return try self.relayAckReply(request) }
+            if request.url?.path == "/v1/media/restore" {
+                resends += 1
+                let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: String])
+                XCTAssertEqual(body["mediaID"], LocalMediaFiles.identifier(ident))
+                XCTAssertEqual(body["data"], ident.base64EncodedString())
+                return try self.pairingHTTPReply(request, ["restored": true])
+            }
+            let requested = phase == 3 ? [String(repeating: "f", count: 64)] :
+                phase == 2 ? [LocalMediaFiles.identifier(ident)] : []
+            return try self.relayReply(request, items: phase == 0 ? [] : [item], referenceOnly: phase > 1,
+                                       requests: requested)
+        }, readToken: { token }, writeToken: { token = $0 })
+        defer { sync.suspend() }
+        try await sync.configure(endpoint: "https://relay.invalid", token: "private-phone-A", store: store)
+        sync.stop()
+        phase = 1
+        await sync.refresh(store: store)
+        phase = 2
+        try await sync.refreshForShortcut(store: store)
+        XCTAssertEqual(resends, 0)
+        await sync.refresh(store: store)
+        XCTAssertEqual(resends, 1)
+        phase = 3
+        await sync.refresh(store: store)
+        XCTAssertEqual(resends, 1)
+        XCTAssertTrue(sync.status.hasPrefix("Sync paused:"))
+    }
+
+    func testPublishedOwnAndSharedPhotosAreRetainedBeforeSenderReceipts() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var token = ""
+        var receipts = Set<String>()
+        let sync = PairSync(transport: { request in
+            if request.url?.path == "/v1/apply" {
+                var body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+                body["revision"] = 1
+                body["author"] = "A"
+                return try self.pairingHTTPReply(request, body, headers: ["X-CoupleDraw-Media": "2"])
+            }
+            if request.url?.path == "/v1/media/ack" {
+                let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+                let incoming = try XCTUnwrap(body["receipts"] as? [[String: Any]])
+                for receipt in incoming {
+                    receipts.insert(try XCTUnwrap(receipt["source"] as? String))
+                    for ident in try XCTUnwrap(receipt["mediaIDs"] as? [String]) { XCTAssertNotNil(try store.relayImage(ident)) }
+                }
+                return try self.relayAckReply(request)
+            }
+            return try self.relayReply(request)
+        }, readToken: { token }, writeToken: { token = $0 })
+        defer { sync.suspend() }
+        try await sync.configure(endpoint: "https://relay.invalid", token: "private-phone-A", store: store)
+        sync.stop()
+        let own = try relayRevision(source: "a")
+        store.updateBackgroundPhoto(own.backgroundPhoto, on: .first)
+        store.updateStickers(own.stickers ?? [], on: .first)
+        XCTAssertNotNil(store.apply(.first))
+        await sync.publish(store.record(.first), slot: .first, store: store)
+        let shared = try relayRevision(source: "together", color: .blue)
+        store.updateBackgroundPhoto(shared.backgroundPhoto, on: .together)
+        store.updateStickers(shared.stickers ?? [], on: .together)
+        sync.markDirty(.together)
+        let applied = await sync.applyWhiteboard(store: store)
+        XCTAssertTrue(applied)
+        XCTAssertEqual(receipts, ["a", "together"])
+        XCTAssertEqual(store.revisions.first?.document.backgroundPhoto, shared.backgroundPhoto)
+    }
+
+    func testDelayedReceiptCannotConfirmMediaForANewPairingSession() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = try relayRevision()
+        var phase = 0
+        var token = ""
+        var reply: CheckedContinuation<(Data, URLResponse), Error>?
+        var acknowledgement: URLRequest?
+        let requested = expectation(description: "Old pair receipt sent")
+        let sync = PairSync(transport: { request in
+            if request.url?.path == "/v1/media/ack" {
+                acknowledgement = request
+                return try await withCheckedThrowingContinuation { reply = $0; requested.fulfill() }
+            }
+            return try self.relayReply(request, items: phase == 1 && request.url?.host == "relay.invalid" ? [item] : [])
+        }, readToken: { token }, writeToken: { token = $0 })
+        defer { sync.suspend() }
+        try await sync.configure(endpoint: "https://relay.invalid", token: "private-phone-A", store: store)
+        sync.stop()
+        phase = 1
+        let receiving = Task { await sync.refresh(store: store) }
+        await fulfillment(of: [requested], timeout: 5)
+        try await sync.configure(endpoint: "https://new-pair.invalid", token: "new-private-phone", store: store)
+        sync.stop()
+        let newStatus = sync.status
+        try XCTUnwrap(reply).resume(returning: relayAckReply(XCTUnwrap(acknowledgement)))
+        await receiving.value
+        XCTAssertEqual(sync.status, newStatus)
+        let identity = LocalMediaFiles.identifier(Data("https://new-pair.invalid|new-private-phone".utf8))
+        XCTAssertTrue(try store.pendingRelayReceipts(identity: identity).isEmpty)
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("relay-media.json"))) as? [String: Any])
+        XCTAssertEqual(manifest["identity"] as? String, identity)
+    }
+
     private func pairingHTTPReply(_ request: URLRequest, _ body: [String: Any], status: Int = 200,
                                   headers: [String: String]? = nil) throws -> (Data, URLResponse) {
         (try JSONSerialization.data(withJSONObject: body),
