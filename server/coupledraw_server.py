@@ -286,6 +286,7 @@ class PairingService:
                 now = int(time.time())
                 with connect(self.db_path) as db:
                     db.execute("BEGIN IMMEDIATE")
+                    now = int(time.time())
                     self.clean(db, now)
                     column = "joiner_hash" if action == "join" else "creator_hash"
                     row = db.execute(f"SELECT id, code, joiner_hash, expires_at, recover_until FROM pairing_sessions WHERE {column}=?", (digest,)).fetchone()
@@ -302,6 +303,7 @@ class PairingService:
                                 "credential": self.credential(secret, row[0], role)}
                     if first and not (action == "create" and row):
                         self.limit(db, action, peer, now)
+                        now = int(time.time())
                         # Re-read after the limiter commits: another process may
                         # have joined, cancelled or expired the invitation.
                         self.clean(db, now)

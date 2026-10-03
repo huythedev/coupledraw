@@ -326,6 +326,10 @@ private enum SyncTransport {
     func cancelPairing() async throws {
         guard let attempt = pairingAttempt else { return }
         guard !completingPairing else { throw SyncError.server("Wait for this phone to finish connecting.") }
+        // No code has been displayed or shared yet. Allow correcting an
+        // unreachable/older server without trapping the user in this attempt.
+        // A lost Create response can leave only an unadvertised, expiring invite.
+        if attempt.kind == .create && attempt.code == nil { try savePairing(nil); return }
         let reply = try await pairingRequest(attempt, action: "cancel")
         guard reply.state == "cancelled" else { throw SyncError.response }
         try savePairing(nil)

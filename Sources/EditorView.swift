@@ -17,6 +17,7 @@ struct EditorView: View {
     @State private var showTarget = false
     @State private var showPairing = false
     @State private var pairingInvite: PairingInvite?
+    @State private var queuedInvitePresentation = false
     @State private var showFullScreen = false
 
     private var record: CanvasRecord { store.displayedRecord(slot) }
@@ -92,9 +93,11 @@ struct EditorView: View {
         }
         .onOpenURL { url in
             if let invite = PairingInvite(url: url) {
+                let closingMenu = showHistory || showSetup || showTarget || showFullScreen
                 showHistory = false; showSetup = false; showTarget = false; showFullScreen = false
                 pairingInvite = invite
-                showPairing = true
+                if closingMenu { queuedInvitePresentation = true }
+                else { showPairing = true }
                 return
             }
             guard url.scheme == "coupledraw", url.host == "open" else { return }
@@ -105,14 +108,15 @@ struct EditorView: View {
             showTarget = false
             showPairing = false
             pairingInvite = nil
+            queuedInvitePresentation = false
             showFullScreen = false
             slot = .first
         }
-        .sheet(isPresented: $showHistory) { RevisionHistory(slot: slot) }
-        .sheet(isPresented: $showSetup) { WallpaperSetupView() }
-        .sheet(isPresented: $showTarget) { PartnerTargetView() }
+        .sheet(isPresented: $showHistory, onDismiss: openQueuedInvite) { RevisionHistory(slot: slot) }
+        .sheet(isPresented: $showSetup, onDismiss: openQueuedInvite) { WallpaperSetupView() }
+        .sheet(isPresented: $showTarget, onDismiss: openQueuedInvite) { PartnerTargetView() }
         .sheet(isPresented: $showPairing, onDismiss: { pairingInvite = nil }) { PairingView(invitation: pairingInvite) }
-        .fullScreenCover(isPresented: $showFullScreen) {
+        .fullScreenCover(isPresented: $showFullScreen, onDismiss: openQueuedInvite) {
             FullScreenCanvasView(slot: slot, isPresented: $showFullScreen,
                                  tool: $tool, inkColor: $inkColor, size: $size)
                 .environmentObject(store).environmentObject(sync)
@@ -216,6 +220,12 @@ struct EditorView: View {
             destination("Pair", symbol: "person.2") { showPairing = true }
             destination("Setup", symbol: "gearshape") { showSetup = true }
         }
+    }
+
+    private func openQueuedInvite() {
+        guard queuedInvitePresentation else { return }
+        queuedInvitePresentation = false
+        showPairing = true
     }
 
     private func destination(_ title: String, symbol: String,

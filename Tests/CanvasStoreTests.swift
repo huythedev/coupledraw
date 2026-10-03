@@ -728,7 +728,13 @@ import UIKit
         var savedPairing: String?
         var testToken = "existing-private-token"
         var actions: [String] = []
+        var partnerJoined = false
+        let credential = String(repeating: "a", count: 64)
         let sync = PairSync(transport: { request in
+            if request.url?.path == "/v1/state" {
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer " + credential)
+                return try self.stateReply(request)
+            }
             XCTAssertNotNil(savedPairing)
             XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
             XCTAssertEqual(request.url?.host, "draw.huythedev.com")
@@ -736,6 +742,9 @@ import UIKit
             if request.url?.lastPathComponent == "status" {
                 XCTAssertEqual(request.value(forHTTPHeaderField: "Prefer"), "wait=20")
                 XCTAssertEqual(request.timeoutInterval, 35)
+            }
+            if partnerJoined {
+                return try self.pairingHTTPReply(request, ["state": "paired", "role": "A", "credential": credential])
             }
             return try self.pairingHTTPReply(request, ["state": "waiting", "code": "048273",
                                                       "expiresAt": Date().timeIntervalSince1970 + 300])
@@ -753,6 +762,14 @@ import UIKit
         XCTAssertEqual(sync.endpoint, "https://existing.invalid")
         XCTAssertEqual(testToken, "existing-private-token")
         XCTAssertEqual(UserDefaults.standard.string(forKey: "syncEndpoint"), "https://existing.invalid")
+        partnerJoined = true
+        let joined = try await sync.resumePairing(store: store)
+        sync.stop()
+        XCTAssertTrue(joined)
+        XCTAssertEqual(sync.endpoint, PairSync.defaultEndpoint)
+        XCTAssertEqual(sync.role, "A")
+        XCTAssertEqual(testToken, credential)
+        XCTAssertNil(savedPairing)
     }
 
     func testJoinPairRecoversAfterLostResponseAndAppRestart() async throws {
@@ -870,7 +887,7 @@ import UIKit
             if request.url?.lastPathComponent == "create" {
                 return try await withCheckedThrowingContinuation { reply = $0; requested.fulfill() }
             }
-            return try self.pairingHTTPReply(request, ["state": "cancelled"])
+            throw URLError(.cannotConnectToHost)
         }, readToken: { "" }, writeToken: { _ in },
            readPairing: { savedPairing }, writePairing: { savedPairing = $0 })
         defer { sync.suspend() }

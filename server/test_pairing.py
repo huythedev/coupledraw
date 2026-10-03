@@ -61,6 +61,8 @@ class PairingHTTPTests(unittest.TestCase):
             self.assertEqual(self.state(credential)[1]["role"], role)
         self.assertEqual(self.request("join", {"code": invite["code"], "secret": secrets.token_hex(32)})[0], 410)
         self.assertEqual(self.request("status", {"secret": secrets.token_hex(32)})[0], 410)
+        self.assertEqual(self.request("status", {"secret": joiner})[0], 410)
+        self.assertEqual(self.request("create", {"secret": joiner})[0], 409)
         with server.connect(self.db_path) as db:
             members = db.execute("SELECT token_hash, pair_id, role FROM members WHERE token_hash IN (?, ?)",
                                  tuple(hashlib.sha256(t.encode()).hexdigest() for t in [claimed["credential"], joined["credential"]])).fetchall()
