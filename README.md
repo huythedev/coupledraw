@@ -48,5 +48,6 @@ While open, the app waits for server changes and refreshes promptly. While close
 - [Wallpaper and automations](docs/wallpaper-and-automations.md) — Shortcuts, notification triggers, locked phones, and limitations.
 - [Build and signing](docs/build-and-sign.md) — Xcode, unsigned IPA, signing both targets, and releases.
 - [Development](docs/development.md) — tests, project generation, sync details, and current scope.
+- [Sync and resource limits](docs/sync-and-resources.md) — WAL reads, safe board cleanup, Shortcut memory, retry policy, and app sandbox.
 
 Licensed under [MIT](LICENSE).

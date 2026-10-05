@@ -11,37 +11,27 @@ struct LatestWallpaperIntent: AppIntent {
     static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
 
     func perform() async throws -> some IntentResult & ReturnsValue<IntentFile> {
-        let store = await MainActor.run { CanvasStore() }
+        let choice = WallpaperChoice(rawValue: UserDefaults.standard.string(forKey: "wallpaperChoice") ?? "own") ?? .own
+        let store = await MainActor.run { CanvasStore(shortcutChoice: choice) }
         let sync = await MainActor.run { PairSync() }
-        try await sync.refreshForShortcut(store: store)
-        let imageData = try await MainActor.run { () throws -> Data in
-            let choice = WallpaperChoice(rawValue: UserDefaults.standard.string(forKey: "wallpaperChoice") ?? "own") ?? .own
+        try await sync.refreshForShortcut(store: store, choice: choice)
+        let fileURL = try await MainActor.run { () throws -> URL in
             if choice == .partner && !sync.hasPartnerArt {
                 throw WallpaperIntentError.noPartnerArt
             }
-            let myCanvasID = store.record(choice.slot).canvasID
-            guard let latest = store.revisions.first(where: { $0.canvasID == myCanvasID && $0.recovery != true }) else {
-                throw WallpaperIntentError.noAppliedRevision
-            }
-            if choice == .partner && latest.document.targetSize != .thisIPhone {
-                let image = try WallpaperRenderer.render(latest.document, pixels: WallpaperSize.thisIPhone.pixels)
-                guard let data = image.pngData() else { throw WallpaperIntentError.imageEncoding }
-                return data
-            }
-            return try Data(contentsOf: store.cachedWallpaperURL(for: latest))
+            return try store.wallpaperFileForShortcut(on: choice.slot)
         }
-        return .result(value: IntentFile(data: imageData,
+        try await sync.acknowledgeShortcutMedia(store: store)
+        return .result(value: IntentFile(fileURL: fileURL,
                                          filename: "CoupleDraw-Wallpaper.png", type: .png))
     }
 }
 
 private enum WallpaperIntentError: LocalizedError {
-    case noAppliedRevision, noPartnerArt, imageEncoding
+    case noPartnerArt
     var errorDescription: String? {
         switch self {
-        case .noAppliedRevision: return "Apply a drawing on your selected source before running this shortcut."
         case .noPartnerArt: return "Pair the phones and wait for your partner to Apply on My art."
-        case .imageEncoding: return "Could not encode the selected wallpaper."
         }
     }
 }

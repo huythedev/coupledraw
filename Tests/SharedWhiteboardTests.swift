@@ -49,6 +49,21 @@ import PencilKit
         XCTAssertEqual(try PKDrawing(data: reopened.drawingData).strokes.count, 1)
     }
 
+    func testQueuedPatchKeepsItsCapturedRevisionAcrossUpdatesAndRelaunch() throws {
+        let (board, file) = try makeBoard()
+        defer { try? FileManager.default.removeItem(at: file) }
+        try board.receive(BoardUpdate(revision: 12, baseRevision: nil, strokes: [], removed: []))
+        board.drawingChanged(try stroke(10).drawingData)
+        let original = try XCTUnwrap(board.nextPatch)
+        XCTAssertEqual(original.baseRevision, 12)
+        try board.receive(BoardUpdate(revision: 50, baseRevision: nil, strokes: [try stroke(20)], removed: []))
+        let reopened = try SharedWhiteboard(url: file, height: 844)
+        XCTAssertEqual(reopened.nextPatch?.id, original.id)
+        XCTAssertEqual(reopened.nextPatch?.baseRevision, 12)
+        let legacy = Data("{\"id\":\"legacy\",\"add\":[],\"remove\":[]}".utf8)
+        XCTAssertNil(try JSONDecoder().decode(BoardPatch.self, from: legacy).baseRevision)
+    }
+
     func testMovePartnerStrokeAndUndoOnlyMyEdit() throws {
         let (board, file) = try makeBoard()
         defer { try? FileManager.default.removeItem(at: file) }

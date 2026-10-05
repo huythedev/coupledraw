@@ -15,6 +15,8 @@ Identical images share a file. If another canvas or pair still awaits that image
 
 Open both apps after upgrading so they can receive and confirm existing originals. A Shortcut also saves and confirms newly received images when invoked. This does not add background polling or notifications. Pending receipt retries survive an app restart.
 
+The Shortcut retains every latest original but only loads and exports the chosen wallpaper. It sends pending receipts after that export succeeds. The exported file remains available to Shortcuts even if Clear cache runs during the handoff.
+
 ## Phone storage and Clear cache
 
 Each phone stores the latest originals for all three paired canvases so it can render wallpapers and help its partner recover a lost copy. It does not download the other phone's entire History. Locally saved History can retain older originals until you delete those revisions.

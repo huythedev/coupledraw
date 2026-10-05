@@ -16,6 +16,8 @@ In Xcode, choose **Product → Test** for the PencilKit model tests. The Python 
 
 ## Data and syncing
 
+See [sync and resource limits](sync-and-resources.md) for read-only WAL polling, pair-scoped wakeups, bounded whiteboard history, lightweight Shortcut storage, retries and the current sandbox design.
+
 Local canvases keep editable PencilKit data. Apply stores an immutable revision and a regenerable PNG cache; History also holds recovered drafts if a shared edit conflicts. Background photos and stickers are separate editable layers backed by content-addressed local image files, shared by all referencing documents. Legacy inline images migrate on loading. The Shortcut returns the latest selected applied revision at the receiving phone's native portrait dimensions and regenerates its PNG if cache was cleared.
 
 Network JSON transfers authenticated originals with changed snapshots while delivery is pending. Clients advertise `X-CoupleDraw-Media: 2`; the server returns image hashes and a full latest-revision media inventory, even when known snapshots are omitted. After delivery, snapshots contain references that the app resolves from protected local originals. Legacy clients receive the original inline format and keep their pending images on the server until they upgrade.

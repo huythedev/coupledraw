@@ -19,6 +19,8 @@ import tempfile
 import threading
 import time
 import warnings
+import fcntl
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
@@ -33,8 +35,56 @@ MAX_RELAY_IMAGES = 52  # Three latest canvases and the temporary legacy base.
 PAIRING_TTL = 300
 PAIRING_RECOVERY_TTL = 86400
 MAX_PAIRING_SESSIONS = 100
-lock = threading.RLock()
-state_changed = threading.Condition(lock)
+BOARD_HISTORY_REVISIONS = 1024
+BOARD_MAX_TOMBSTONES = 6000
+BOARD_MAX_OPERATIONS = 4096
+pairing_changed = threading.Condition(threading.RLock())
+
+
+class PairEvents:
+    """Process-local pair wakeups; leases prevent an unbounded registry."""
+    class Signal:
+        def __init__(self):
+            self.condition = threading.Condition()
+            self.generation = 0
+            self.users = 0
+
+        def version(self):
+            with self.condition:
+                return self.generation
+
+        def wait(self, version, timeout):
+            with self.condition:
+                if self.generation == version:
+                    self.condition.wait(timeout)
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.signals = {}
+
+    @contextmanager
+    def watch(self, pair_id):
+        with self.lock:
+            signal = self.signals.setdefault(pair_id, self.Signal())
+            signal.users += 1
+        try:
+            yield signal
+        finally:
+            with self.lock:
+                signal.users -= 1
+                if signal.users == 0:
+                    del self.signals[pair_id]
+
+    def notify(self, pair_id):
+        with self.lock:
+            signal = self.signals.get(pair_id)
+            if signal is not None:
+                with signal.condition:
+                    signal.generation += 1
+                    signal.condition.notify_all()
+
+
+pair_events = PairEvents()
 
 
 class SyncHTTPServer(ThreadingHTTPServer):
@@ -87,6 +137,18 @@ class MediaFiles:
         if not isinstance(ident, str) or not re.fullmatch(r"[0-9a-f]{64}", ident):
             raise ValueError("Invalid stored media reference")
         return self.root / (ident + ".image")
+
+    @contextmanager
+    def access(self, exclusive=False):
+        # Readers acquire this BEFORE starting their SQLite read snapshot.
+        # Every file-writing/pruning transaction takes EX before BEGIN IMMEDIATE.
+        # WAL readers can therefore hydrate safely without taking a writer lock.
+        descriptor = os.open(self.root / ".access.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            yield
+        finally:
+            os.close(descriptor)  # Last close releases flock, including after kill.
 
     def store_image(self, item):
         if item is None or "data" not in item:
@@ -173,7 +235,7 @@ class MediaFiles:
         db.execute("INSERT INTO media_generation VALUES (?, 1) ON CONFLICT(pair_id) DO UPDATE SET revision=revision+1", (pair_id,))
 
     def prune(self, db):
-        # BEGIN IMMEDIATE also serializes readers and other server processes.
+        # Caller holds the exclusive media lock and BEGIN IMMEDIATE.
         # A shared hash is kept until EVERY pair/revision referencing it has
         # receipts from both phones. HTTP delivery alone never grants a receipt.
         references = self.references(db)
@@ -201,7 +263,7 @@ class MediaFiles:
 def prepare_media(db_path, media, compact=False):
     """Migrate old inline images transactionally, then reclaim unused storage."""
     migrated = 0
-    with connect(db_path) as db:
+    with media.access(exclusive=True), connect(db_path) as db:
         db.execute("BEGIN IMMEDIATE")
         # Once the new board exists, the legacy seed is no longer needed.
         db.execute("UPDATE shared_base SET body='null' WHERE pair_id IN (SELECT pair_id FROM whiteboards)")
@@ -233,7 +295,7 @@ class Database(sqlite3.Connection):
             self.close()
 
 
-def connect(path):
+def connect(path, initialize=True):
     if str(path) != ":memory:":
         try:
             descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
@@ -242,24 +304,90 @@ def connect(path):
         else:
             os.close(descriptor)
     db = sqlite3.connect(path, timeout=10, factory=Database)
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("CREATE TABLE IF NOT EXISTS members (token_hash TEXT PRIMARY KEY, pair_id TEXT NOT NULL, role TEXT NOT NULL)")
-    db.execute("CREATE TABLE IF NOT EXISTS snapshots (pair_id TEXT NOT NULL, source TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(pair_id, source))")
-    db.execute("CREATE TABLE IF NOT EXISTS devices (pair_id TEXT NOT NULL, role TEXT NOT NULL, token TEXT NOT NULL, environment TEXT NOT NULL DEFAULT 'auto', PRIMARY KEY(pair_id, role))")
-    db.execute("CREATE TABLE IF NOT EXISTS ntfy_topics (pair_id TEXT NOT NULL, role TEXT NOT NULL, topic TEXT NOT NULL UNIQUE, PRIMARY KEY(pair_id, role))")
-    db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-    db.execute("CREATE TABLE IF NOT EXISTS shared_drafts (pair_id TEXT NOT NULL, role TEXT NOT NULL, revision INTEGER NOT NULL, drawing_data TEXT NOT NULL, drawing_height REAL NOT NULL, PRIMARY KEY(pair_id, role))")
-    db.execute("CREATE TABLE IF NOT EXISTS shared_base (pair_id TEXT PRIMARY KEY, body TEXT NOT NULL)")
-    db.execute("CREATE TABLE IF NOT EXISTS whiteboards (pair_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)")
-    db.execute("CREATE TABLE IF NOT EXISTS board_strokes (pair_id TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, height REAL NOT NULL, added_revision INTEGER NOT NULL, deleted_revision INTEGER, PRIMARY KEY(pair_id, id))")
-    db.execute("CREATE TABLE IF NOT EXISTS board_operations (pair_id TEXT NOT NULL, id TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(pair_id, id))")
-    db.execute("CREATE TABLE IF NOT EXISTS pairing_sessions (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, creator_hash TEXT NOT NULL UNIQUE, joiner_hash TEXT UNIQUE, token_a_hash TEXT NOT NULL, expires_at INTEGER NOT NULL, recover_until INTEGER)")
-    db.execute("CREATE TABLE IF NOT EXISTS pairing_limits (bucket TEXT NOT NULL, window INTEGER NOT NULL, hits INTEGER NOT NULL, PRIMARY KEY(bucket, window))")
-    db.execute("CREATE TABLE IF NOT EXISTS media_deliveries (pair_id TEXT NOT NULL, source TEXT NOT NULL, revision INTEGER NOT NULL, role TEXT NOT NULL, PRIMARY KEY(pair_id, source, revision, role))")
-    db.execute("CREATE TABLE IF NOT EXISTS media_requests (pair_id TEXT NOT NULL, media_id TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY(pair_id, media_id, role))")
-    db.execute("CREATE TABLE IF NOT EXISTS media_generation (pair_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)")
-    db.commit()
+    if not initialize:
+        return db
+    try:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("CREATE TABLE IF NOT EXISTS members (token_hash TEXT PRIMARY KEY, pair_id TEXT NOT NULL, role TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS snapshots (pair_id TEXT NOT NULL, source TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(pair_id, source))")
+        db.execute("CREATE TABLE IF NOT EXISTS devices (pair_id TEXT NOT NULL, role TEXT NOT NULL, token TEXT NOT NULL, environment TEXT NOT NULL DEFAULT 'auto', PRIMARY KEY(pair_id, role))")
+        db.execute("CREATE TABLE IF NOT EXISTS ntfy_topics (pair_id TEXT NOT NULL, role TEXT NOT NULL, topic TEXT NOT NULL UNIQUE, PRIMARY KEY(pair_id, role))")
+        db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS shared_drafts (pair_id TEXT NOT NULL, role TEXT NOT NULL, revision INTEGER NOT NULL, drawing_data TEXT NOT NULL, drawing_height REAL NOT NULL, PRIMARY KEY(pair_id, role))")
+        db.execute("CREATE TABLE IF NOT EXISTS shared_base (pair_id TEXT PRIMARY KEY, body TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS whiteboards (pair_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS board_strokes (pair_id TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, height REAL NOT NULL, added_revision INTEGER NOT NULL, deleted_revision INTEGER, PRIMARY KEY(pair_id, id))")
+        db.execute("CREATE TABLE IF NOT EXISTS board_operations (pair_id TEXT NOT NULL, id TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(pair_id, id))")
+        db.execute("CREATE TABLE IF NOT EXISTS pairing_sessions (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, creator_hash TEXT NOT NULL UNIQUE, joiner_hash TEXT UNIQUE, token_a_hash TEXT NOT NULL, expires_at INTEGER NOT NULL, recover_until INTEGER)")
+        db.execute("CREATE TABLE IF NOT EXISTS pairing_limits (bucket TEXT NOT NULL, window INTEGER NOT NULL, hits INTEGER NOT NULL, PRIMARY KEY(bucket, window))")
+        db.execute("CREATE TABLE IF NOT EXISTS media_deliveries (pair_id TEXT NOT NULL, source TEXT NOT NULL, revision INTEGER NOT NULL, role TEXT NOT NULL, PRIMARY KEY(pair_id, source, revision, role))")
+        db.execute("CREATE TABLE IF NOT EXISTS media_requests (pair_id TEXT NOT NULL, media_id TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY(pair_id, media_id, role))")
+        db.execute("CREATE TABLE IF NOT EXISTS media_generation (pair_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS board_history (pair_id TEXT PRIMARY KEY, minimum_revision INTEGER NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS board_clients (pair_id TEXT NOT NULL, role TEXT NOT NULL, history_protocol INTEGER NOT NULL, PRIMARY KEY(pair_id, role))")
+        db.execute("CREATE TABLE IF NOT EXISTS board_operation_history (pair_id TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(pair_id, id))")
+        db.execute("CREATE INDEX IF NOT EXISTS board_strokes_active ON board_strokes(pair_id, deleted_revision, added_revision)")
+        db.execute("CREATE INDEX IF NOT EXISTS board_operations_revision ON board_operation_history(pair_id, revision)")
+        # Legacy digests lack a revision. Keep them through the migration checkpoint.
+        db.execute("INSERT OR IGNORE INTO board_operation_history SELECT o.pair_id, o.id, COALESCE(w.revision, 0) FROM board_operations o LEFT JOIN whiteboards w ON w.pair_id=o.pair_id")
+        db.commit()
+    except BaseException:
+        db.close()
+        raise
     return db
+
+
+def read_connection(path):
+    db = connect(path, initialize=False)
+    try:
+        db.execute("PRAGMA query_only=ON")
+        return db
+    except BaseException:
+        db.close()
+        raise
+
+
+def ensure_shared_base(db_path, pair_id):
+    with read_connection(db_path) as db:
+        if db.execute("SELECT 1 FROM shared_base WHERE pair_id=?", (pair_id,)).fetchone():
+            return
+    with connect(db_path, initialize=False) as db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("INSERT OR IGNORE INTO shared_base (pair_id, body) SELECT ?, COALESCE((SELECT body FROM snapshots WHERE pair_id=? AND source='together'), 'null')", (pair_id, pair_id))
+
+
+def register_board_client(db_path, member, protocol):
+    if protocol != "1":
+        return
+    with read_connection(db_path) as db:
+        if db.execute("SELECT 1 FROM board_clients WHERE pair_id=? AND role=? AND history_protocol=1", member).fetchone():
+            return
+    with connect(db_path, initialize=False) as db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("INSERT OR REPLACE INTO board_clients VALUES (?, ?, 1)", member)
+
+
+def compact_board(db, pair_id, revision):
+    # Unversioned legacy retries cannot safely survive digest/tombstone GC.
+    # Enable it only after both phones advertise captured-base-revision support.
+    capable = {row[0] for row in db.execute("SELECT role FROM board_clients WHERE pair_id=? AND history_protocol=1", (pair_id,))}
+    if capable != {"A", "B"}:
+        return
+    row = db.execute("SELECT minimum_revision FROM board_history WHERE pair_id=?", (pair_id,)).fetchone()
+    old_floor = row[0] if row else 0
+    floor = max(old_floor, revision - BOARD_HISTORY_REVISIONS)
+    for query, maximum in (("SELECT deleted_revision FROM board_strokes WHERE pair_id=? AND deleted_revision IS NOT NULL ORDER BY deleted_revision DESC LIMIT 1 OFFSET ?", BOARD_MAX_TOMBSTONES),
+                           ("SELECT revision FROM board_operation_history WHERE pair_id=? ORDER BY revision DESC LIMIT 1 OFFSET ?", BOARD_MAX_OPERATIONS)):
+        boundary = db.execute(query, (pair_id, maximum)).fetchone()
+        if boundary:
+            floor = max(floor, boundary[0])
+    if floor <= old_floor:
+        return
+    db.execute("DELETE FROM board_strokes WHERE pair_id=? AND deleted_revision<=?", (pair_id, floor))
+    db.execute("DELETE FROM board_operations WHERE pair_id=? AND id IN (SELECT id FROM board_operation_history WHERE pair_id=? AND revision<=?)", (pair_id, pair_id, floor))
+    db.execute("DELETE FROM board_operation_history WHERE pair_id=? AND revision<=?", (pair_id, floor))
+    db.execute("INSERT OR REPLACE INTO board_history VALUES (?, ?)", (pair_id, floor))
 
 
 class PairingError(Exception):
@@ -323,10 +451,10 @@ class PairingService:
         digest = self.digest(secret)
         deadline = time.monotonic() + min(max(wait, 0), 20)
         first = True
-        with state_changed:
+        with pairing_changed:
             while True:
                 now = int(time.time())
-                with connect(self.db_path) as db:
+                with connect(self.db_path, initialize=False) as db:
                     db.execute("BEGIN IMMEDIATE")
                     now = int(time.time())
                     self.clean(db, now)
@@ -337,7 +465,7 @@ class PairingService:
                             raise PairingError(409, "Your partner has joined. Finish connecting to keep this pair.")
                         db.execute("DELETE FROM pairing_sessions WHERE creator_hash=?", (digest,))
                         db.commit()
-                        state_changed.notify_all()
+                        pairing_changed.notify_all()
                         return {"state": "cancelled"}
                     if row and row[2] is not None:
                         role = "B" if action == "join" else "A"
@@ -383,7 +511,7 @@ class PairingService:
                                        [(invite[1], invite[0], "A"), (self.digest(credential), invite[0], "B")])
                         db.execute("UPDATE pairing_sessions SET joiner_hash=?, recover_until=? WHERE id=?", (digest, now + PAIRING_RECOVERY_TTL, invite[0]))
                         db.commit()
-                        state_changed.notify_all()
+                        pairing_changed.notify_all()
                         return {"state": "paired", "role": "B", "credential": credential}
                     if row is None:
                         raise PairingError(410, "This pairing session expired or was cancelled. Create a new code.")
@@ -391,7 +519,7 @@ class PairingService:
                     if remaining <= 0:
                         return {"state": "waiting", "code": row[1], "expiresAt": row[3]}
                 # No SQLite transaction stays open while the creator waits.
-                state_changed.wait(timeout=min(remaining, 1))
+                pairing_changed.wait(timeout=min(remaining, 1))
                 first = False
 
 
@@ -400,20 +528,23 @@ def board_update(db, pair_id, since=None):
     if not row:
         return None
     revision = row[0]
-    full = type(since) is not int or not 1 <= since <= revision
+    history = db.execute("SELECT minimum_revision FROM board_history WHERE pair_id=?", (pair_id,)).fetchone()
+    minimum = history[0] if history else 0
+    full = type(since) is not int or not max(1, minimum) <= since <= revision
     if full:
         strokes = db.execute("SELECT id, data, height FROM board_strokes WHERE pair_id=? AND deleted_revision IS NULL ORDER BY added_revision, rowid", (pair_id,)).fetchall()
         removed = []
     else:
         strokes = db.execute("SELECT id, data, height FROM board_strokes WHERE pair_id=? AND added_revision>? AND deleted_revision IS NULL ORDER BY added_revision, rowid", (pair_id, since)).fetchall()
         removed = [r[0] for r in db.execute("SELECT id FROM board_strokes WHERE pair_id=? AND deleted_revision>?", (pair_id, since))]
-    return {"revision": revision, "baseRevision": None if full else since,
+    return {"revision": revision, "baseRevision": None if full else since, "minimumRevision": minimum,
             "strokes": [{"id": i, "drawingData": data, "drawingHeight": h} for i, data, h in strokes],
             "removed": removed}
 
 
-def legacy_seed(db, pair_id):
-    db.execute("INSERT OR IGNORE INTO shared_base (pair_id, body) SELECT ?, COALESCE((SELECT body FROM snapshots WHERE pair_id=? AND source='together'), 'null')", (pair_id, pair_id))
+def legacy_seed(db, pair_id, initialize=True):
+    if initialize:
+        db.execute("INSERT OR IGNORE INTO shared_base (pair_id, body) SELECT ?, COALESCE((SELECT body FROM snapshots WHERE pair_id=? AND source='together'), 'null')", (pair_id, pair_id))
     base = db.execute("SELECT body FROM shared_base WHERE pair_id=?", (pair_id,)).fetchone()[0]
     drafts = db.execute("SELECT role, revision, drawing_data, drawing_height FROM shared_drafts WHERE pair_id=? ORDER BY role", (pair_id,)).fetchall()
     tag = hashlib.sha256(json.dumps([base, drafts], separators=(",", ":")).encode()).hexdigest()
@@ -451,10 +582,10 @@ def validate_ntfy_base_url(raw):
     return raw
 
 
-def ntfy_base_url(db_path):
+def ntfy_base_url(db_path, initialize=True):
     raw = os.environ.get("NTFY_BASE_URL")
     if not raw:
-        with connect(db_path) as db:
+        with connect(db_path, initialize=initialize) as db:
             row = db.execute("SELECT value FROM settings WHERE key='ntfy_base_url'").fetchone()
         raw = row[0] if row else None
     return validate_ntfy_base_url(raw) if raw else None
@@ -470,7 +601,12 @@ def configure_ntfy(db_path):
 
 
 def recipient_topic(db_path, pair_id, role):
-    with connect(db_path) as db:
+    with read_connection(db_path) as db:
+        row = db.execute("SELECT topic FROM ntfy_topics WHERE pair_id=? AND role=?", (pair_id, role)).fetchone()
+        if row:
+            return row[0]
+    with connect(db_path, initialize=False) as db:
+        db.execute("BEGIN IMMEDIATE")
         db.execute("INSERT OR IGNORE INTO ntfy_topics VALUES (?, ?, ?)",
                    (pair_id, role, "coupledraw-" + secrets.token_urlsafe(24)))
         return db.execute("SELECT topic FROM ntfy_topics WHERE pair_id=? AND role=?",
@@ -478,7 +614,7 @@ def recipient_topic(db_path, pair_id, role):
 
 
 def send_ntfy(db_path, pair_id, recipient, revision):
-    base = ntfy_base_url(db_path)
+    base = ntfy_base_url(db_path, initialize=False)
     if not base:
         return
     topic = recipient_topic(db_path, pair_id, recipient)
@@ -518,11 +654,11 @@ def provider_token():
 
 def notify_partner(db_path, pair_id, author, source, revision):
     recipient = "B" if author == "A" else "A"
-    if ntfy_base_url(db_path):
+    if ntfy_base_url(db_path, initialize=False):
         send_ntfy(db_path, pair_id, recipient, revision)
     if not push_configured():
         return
-    with connect(db_path) as db:
+    with connect(db_path, initialize=False) as db:
         row = db.execute("SELECT token, environment FROM devices WHERE pair_id=? AND role=?",
                          (pair_id, recipient)).fetchone()
     if not row:
@@ -541,7 +677,7 @@ def notify_partner(db_path, pair_id, author, source, revision):
                 host = "api.push.apple.com" if environment == "production" else "api.sandbox.push.apple.com"
                 response = client.post(f"https://{host}/3/device/{row[0]}", json=body, headers=headers)
                 if response.status_code == 200:
-                    with connect(db_path) as db:
+                    with connect(db_path, initialize=False) as db:
                         db.execute("UPDATE devices SET environment=? WHERE pair_id=? AND role=? AND token=?",
                                    (environment, pair_id, recipient, row[0]))
                     print(f"APNs accepted revision {revision} for role {recipient}")
@@ -591,7 +727,7 @@ def pair(db_path, custom_tokens=False):
 def serve(db_path, host, port, media_dir=None):
     media = MediaFiles(db_path, media_dir)
     migrated, removed = prepare_media(db_path, media)
-    ntfy = ntfy_base_url(db_path)
+    ntfy = ntfy_base_url(db_path, initialize=False)
     if push_configured():
         try:
             import httpx
@@ -600,6 +736,20 @@ def serve(db_path, host, port, media_dir=None):
             raise SystemExit(f"APNs setup incomplete: {error}") from error
 
     class Handler(BaseHTTPRequestHandler):
+        def handle_one_request(self):
+            self.response_started = False
+            try:
+                super().handle_one_request()
+            except sqlite3.OperationalError as error:
+                code = getattr(error, "sqlite_errorcode", 0) & 255
+                if self.response_started or code not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                    raise
+                self.reply(503, {"error": "The sync database is busy. Try again shortly."}, {"Retry-After": "1"})
+
+        def send_response(self, code, message=None):
+            self.response_started = True
+            super().send_response(code, message)
+
         def read_json(self, limit):
             lengths = self.headers.get_all("Content-Length", [])
             if (self.headers.get("Transfer-Encoding") is not None or len(lengths) != 1 or
@@ -640,7 +790,7 @@ def serve(db_path, host, port, media_dir=None):
             if len(token) > 100:
                 return None
             digest = hashlib.sha256(token.encode()).hexdigest()
-            with connect(db_path) as db:
+            with read_connection(db_path) as db:
                 member = db.execute("SELECT pair_id, role FROM members WHERE token_hash=?", (digest,)).fetchone()
             if member:
                 self.client_role = member[1]
@@ -653,12 +803,14 @@ def serve(db_path, host, port, media_dir=None):
                 return self.reply(401, {"error": "Invalid pairing token"})
             if self.path != "/v1/state":
                 return self.reply(404, {"error": "Not found"})
-            # Older clients omit Prefer. Bound waits so a proxy can retry safely.
+            register_board_client(db_path, member, self.headers.get("X-CoupleDraw-Board-History"))
+            ensure_shared_base(db_path, member[0])
             preferences = [part.strip().lower() for part in self.headers.get("Prefer", "").split(",")]
             wait = next((int(part[5:]) for part in preferences
                          if re.fullmatch(r"wait=[0-9]{1,2}", part) and
                          1 <= int(part[5:]) <= 25), 0)
             deadline = time.monotonic() + wait
+
             def known_versions(header):
                 result = {}
                 for pair in self.headers.get(header, "").split(","):
@@ -670,51 +822,92 @@ def serve(db_path, host, port, media_dir=None):
             known_snapshots = known_versions("X-CoupleDraw-Snapshots")
             known_drafts = known_versions("X-CoupleDraw-Drafts")
             relay = self.headers.get("X-CoupleDraw-Media") == "2"
+            wallpaper = self.headers.get("X-CoupleDraw-Wallpaper")
+            if wallpaper not in ("own", "partner", "together"):
+                wallpaper = None
+            selected = ("together" if wallpaper == "together" else member[1].lower()
+                        if wallpaper == "own" else "b" if member[1] == "A" else "a")
             topic = recipient_topic(db_path, member[0], member[1]) if ntfy else None
             push = push_configured()
-            with state_changed:
+
+            def capture(db, hydrate):
+                db.execute("BEGIN")
+                rows = db.execute("SELECT source, revision FROM snapshots WHERE pair_id=? ORDER BY source",
+                                  (member[0],)).fetchall()
+                drafts = db.execute("SELECT role, revision FROM shared_drafts WHERE pair_id=? ORDER BY role",
+                                    (member[0],)).fetchall()
+                board_row = db.execute("SELECT w.revision, COALESCE(h.minimum_revision, 0) FROM whiteboards w LEFT JOIN board_history h ON h.pair_id=w.pair_id WHERE w.pair_id=?",
+                                       (member[0],)).fetchone()
+                generation = db.execute("SELECT revision FROM media_generation WHERE pair_id=?", (member[0],)).fetchone()
+                marker = json.dumps([member[1], push, topic, ntfy, rows, drafts,
+                                     board_row, relay, generation[0] if generation else 0, wallpaper],
+                                    separators=(",", ":")).encode()
+                etag = '"' + hashlib.sha256(marker).hexdigest()[:24] + '"'
+                if not hydrate:
+                    return etag, None
+                inventory = [{"source": source, "revision": revision, "mediaIDs": sorted(identifiers)}
+                             for (_, source, revision), identifiers in media.references(db, member[0]).items()]
+                requests = sorted({ident for ident, in db.execute(
+                    "SELECT media_id FROM media_requests WHERE pair_id=? AND role<>?", member)
+                                   if not media.path(ident).exists()}) if relay else []
+                items, media_only = [], []
+                for source, revision in rows:
+                    if wallpaper or known_snapshots.get(source) != revision:
+                        raw = db.execute("SELECT body FROM snapshots WHERE pair_id=? AND source=?", (member[0], source)).fetchone()[0]
+                        body = json.loads(raw)
+                        if wallpaper and source != selected:
+                            body["drawingData"] = ""
+                            media_only.append(media.restore(body, relay))
+                        else:
+                            items.append(media.restore(body, relay))
+                base_row = db.execute("SELECT body FROM shared_base WHERE pair_id=?", (member[0],)).fetchone()
+                base = None
+                if self.headers.get("X-CoupleDraw-Base-Known") != "1":
+                    base = json.loads(base_row[0])
+                    if wallpaper and base:
+                        base["drawingData"] = ""
+                    base = media.restore(base, relay)
+                changed_drafts = [] if wallpaper else [
+                    {"role": role, "revision": revision, "drawingData": data, "drawingHeight": height}
+                    for role, revision, data, height in db.execute(
+                        "SELECT role, revision, drawing_data, drawing_height FROM shared_drafts WHERE pair_id=? ORDER BY role", (member[0],))
+                    if known_drafts.get(role) != revision]
+                return etag, {"role": member[1], "pushConfigured": push,
+                              "ntfyTopic": topic, "ntfyBaseURL": ntfy,
+                              "hasPartnerArt": any(source == ("b" if member[1] == "A" else "a") for source, _ in rows),
+                              "items": items, "mediaOnlyItems": media_only if wallpaper else None,
+                              "mediaProtocol": 2 if relay else 1, "mediaInventory": inventory if relay else None,
+                              "mediaRequests": requests, "boardProtocol": 1, "boardHistoryProtocol": 1,
+                              "board": None if wallpaper else board_update(db, member[0], self.board_since()),
+                              "boardSeedTag": None if wallpaper or board_row else legacy_seed(db, member[0], initialize=False),
+                              "sharedBase": base, "drafts": changed_drafts}
+
+            with pair_events.watch(member[0]) as signal:
                 while True:
-                    with connect(db_path) as db:
-                        db.execute("BEGIN IMMEDIATE")
-                        # Freeze the pre-collaboration snapshot as the base. Later
-                        # Applies are saved revisions, not new editable base strokes.
-                        db.execute("INSERT OR IGNORE INTO shared_base (pair_id, body) SELECT ?, COALESCE((SELECT body FROM snapshots WHERE pair_id=? AND source='together'), 'null')",
-                                   (member[0], member[0]))
-                        board = board_update(db, member[0], self.board_since())
-                        seed_tag = legacy_seed(db, member[0]) if board is None else None
-                        base_row = db.execute("SELECT body FROM shared_base WHERE pair_id=?", (member[0],)).fetchone()
-                        rows = db.execute("SELECT source, revision, body FROM snapshots WHERE pair_id=? ORDER BY source",
-                                          (member[0],)).fetchall()
-                        drafts = db.execute("SELECT role, revision, drawing_data, drawing_height FROM shared_drafts WHERE pair_id=? ORDER BY role",
-                                            (member[0],)).fetchall()
-                        generation = db.execute("SELECT revision FROM media_generation WHERE pair_id=?", (member[0],)).fetchone()
-                        inventory = [{"source": source, "revision": revision, "mediaIDs": sorted(identifiers)}
-                                     for (_, source, revision), identifiers in media.references(db, member[0]).items()]
-                        requests = sorted({ident for ident, in db.execute(
-                            "SELECT media_id FROM media_requests WHERE pair_id=? AND role<>?", member)
-                                           if not media.path(ident).exists()}) if relay else []
-                        marker = json.dumps([member[1], push, topic, ntfy,
-                                         [(source, revision) for source, revision, _ in rows],
-                                         [(role, revision) for role, revision, _, _ in drafts],
-                                         board["revision"] if board else None, relay,
-                                         generation[0] if generation else 0],
-                                        separators=(",", ":")).encode()
-                        etag = '"' + hashlib.sha256(marker).hexdigest()[:24] + '"'
-                        remaining = deadline - time.monotonic()
-                        if self.headers.get("If-None-Match") != etag:
-                            try:
-                                changed_snapshots = [media.restore(json.loads(body), relay) for source, revision, body in rows
-                                                     if known_snapshots.get(source) != revision]
-                                hydrated_base = None if self.headers.get("X-CoupleDraw-Base-Known") == "1" else media.restore(json.loads(base_row[0]), relay)
-                            except (OSError, ValueError):
-                                return self.reply(503, {"error": "A stored photo is unavailable. Update CoupleDraw on both phones for temporary media delivery, or re-apply the photo from a phone."})
-                    if self.headers.get("If-None-Match") != etag or remaining <= 0:
+                    version = signal.version()
+                    # Metadata polling never reserves SQLite's writer lock and
+                    # never reads archives/media or opens a file lock.
+                    with read_connection(db_path) as db:
+                        etag, _ = capture(db, False)
+                    if self.headers.get("If-None-Match") != etag:
+                        try:
+                            # SH is acquired before the read snapshot. Pruning
+                            # requires EX, so a file cannot vanish during hydration.
+                            with media.access(), read_connection(db_path) as db:
+                                etag, payload = capture(db, True)
+                        except (OSError, ValueError):
+                            return self.reply(503, {"error": "A stored photo is unavailable. Update CoupleDraw on both phones for temporary media delivery, or re-apply the photo from a phone."},
+                                              {"Retry-After": "5"})
                         break
-                    # Recheck SQLite periodically in case another server process
-                    # wrote to the same database (Condition only wakes this process).
-                    state_changed.wait(timeout=min(remaining, 1))
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        payload = None
+                        break
+                    # Another process cannot signal this registry. Recheck a
+                    # cheap read snapshot periodically, without retaining a DB FD.
+                    signal.wait(version, min(remaining, 1))
             self.event_detail = f" prefer_wait={wait} waited_ms={(time.monotonic() - (deadline - wait)) * 1000:.1f}"
-            if self.headers.get("If-None-Match") == etag:
+            if payload is None:
                 self.send_response(304)
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("ETag", etag)
@@ -722,25 +915,8 @@ def serve(db_path, host, port, media_dir=None):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            changed_drafts = [{"role": role, "revision": revision,
-                               "drawingData": data, "drawingHeight": height}
-                              for role, revision, data, height in drafts
-                              if known_drafts.get(role) != revision]
-            partner_source = "b" if member[1] == "A" else "a"
-            return self.reply(200, {"role": member[1], "pushConfigured": push,
-                                    "ntfyTopic": topic, "ntfyBaseURL": ntfy,
-                                    "hasPartnerArt": any(source == partner_source for source, _, _ in rows),
-                                    "items": changed_snapshots,
-                                    "mediaProtocol": 2 if relay else 1,
-                                    "mediaInventory": inventory if relay else None,
-                                    "mediaRequests": requests if relay else None,
-                                    "boardProtocol": 1, "boardSeedTag": seed_tag,
-                                    "board": board if board and board["revision"] != self.board_since() else None,
-                                    "sharedBase": None if self.headers.get("X-CoupleDraw-Base-Known") == "1"
-                                    else hydrated_base,
-                                    "draftRevisions": {role: revision for role, revision, _, _ in drafts},
-                                    "drafts": changed_drafts},
-                              {"ETag": etag, "X-CoupleDraw-Long-Poll": "1"})
+            # Socket I/O is outside both SQLite and media locks.
+            return self.reply(200, payload, {"ETag": etag, "X-CoupleDraw-Long-Poll": "1"})
 
         def board_since(self):
             raw = self.headers.get("X-CoupleDraw-Board", "")
@@ -778,7 +954,7 @@ def serve(db_path, host, port, media_dir=None):
             except (ValueError, KeyError, TypeError, binascii.Error):
                 return self.reply(400, {"error": "Invalid media delivery request"})
 
-            with state_changed, connect(db_path) as db:
+            with media.access(exclusive=True), connect(db_path, initialize=False) as db:
                 db.execute("BEGIN IMMEDIATE")
                 references = media.references(db, member[0])
                 identifiers = set().union(*references.values()) if references else set()
@@ -807,7 +983,7 @@ def serve(db_path, host, port, media_dir=None):
                         removed = 0
                         print("Media cleanup deferred until next server start.", flush=True)
                     db.commit()
-                    state_changed.notify_all()
+                    pair_events.notify(member[0])
                     result = {"accepted": accepted, "removedBytes": removed}
                     self.event_detail = f" receipts={len(accepted)} removed_bytes={removed}"
                 elif action == "request":
@@ -823,7 +999,7 @@ def serve(db_path, host, port, media_dir=None):
                     if changed:
                         media.changed(db, member[0])
                     db.commit()
-                    state_changed.notify_all()
+                    pair_events.notify(member[0])
                     result = {"queued": True}
                 else:
                     if ident not in identifiers:
@@ -835,11 +1011,14 @@ def serve(db_path, host, port, media_dir=None):
                         media.store_image({"data": obj["data"]})
                     except OSError:
                         return self.reply(507, {"error": "The server could not save the resend. Check available disk space."})
+                    changed_pairs = {member[0]}
                     if was_missing:
-                        for pair in {key[0] for key, ids in media.references(db).items() if ident in ids}:
+                        changed_pairs |= {key[0] for key, ids in media.references(db).items() if ident in ids}
+                        for pair in changed_pairs:
                             media.changed(db, pair)
                     db.commit()
-                    state_changed.notify_all()
+                    for pair in changed_pairs:
+                        pair_events.notify(pair)
                     result = {"restored": True}
             return self.reply(200, result)
 
@@ -851,6 +1030,7 @@ def serve(db_path, host, port, media_dir=None):
                 raise ValueError("Invalid media identifiers")
 
         def edit_board(self, member, seed=False):
+            register_board_client(db_path, member, self.headers.get("X-CoupleDraw-Board-History"))
             try:
                 obj = self.read_json(MAX_BODY)
                 if not isinstance(obj, dict):
@@ -864,10 +1044,15 @@ def serve(db_path, host, port, media_dir=None):
                 operation = None if seed else obj["id"]
                 if not seed and (not isinstance(operation, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,80}", operation)):
                     raise ValueError("Invalid operation ID")
-                digest = hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                base_revision = obj.get("baseRevision")
+                if base_revision is not None and (type(base_revision) is not int or not 0 <= base_revision < 2**63):
+                    raise ValueError("Invalid operation base revision")
+                # Preserve legacy digests when adding captured revision metadata.
+                payload = {key: value for key, value in obj.items() if key != "baseRevision"}
+                digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             except (ValueError, KeyError, TypeError, binascii.Error):
                 return self.reply(400, {"error": "Invalid whiteboard request"})
-            with state_changed, connect(db_path) as db:
+            with (media.access(exclusive=True) if seed else nullcontext()), connect(db_path, initialize=False) as db:
                 # SQLite serializes writes across processes as well as threads.
                 db.execute("BEGIN IMMEDIATE")
                 current = board_update(db, member[0])
@@ -885,6 +1070,11 @@ def serve(db_path, host, port, media_dir=None):
                         if old_op[0] != digest:
                             return self.reply(409, {"error": "Operation ID reused with different edits"})
                         return self.reply(200, board_update(db, member[0], self.board_since()))
+                    minimum = current["minimumRevision"]
+                    if ((minimum > 0 and base_revision is None) or
+                            (base_revision is not None and not minimum <= base_revision <= current["revision"])):
+                        return self.reply(409, {"error": "These edits predate a whiteboard checkpoint. Their local version can be kept in History.",
+                                                "code": "history_compacted", "board": current})
                     active = {stroke["id"] for stroke in current["strokes"]}
                     if not set(removals) <= active:
                         return self.reply(409, {"error": "A partner already changed one of these strokes", "board": current})
@@ -903,6 +1093,8 @@ def serve(db_path, host, port, media_dir=None):
                     db.execute("UPDATE shared_base SET body='null' WHERE pair_id=?", (member[0],))
                 if not seed:
                     db.execute("INSERT INTO board_operations VALUES (?, ?, ?)", (member[0], operation, digest))
+                    db.execute("INSERT INTO board_operation_history VALUES (?, ?, ?)", (member[0], operation, revision))
+                    compact_board(db, member[0], revision)
                 result = board_update(db, member[0], self.board_since())
                 db.commit()
                 if seed:
@@ -912,7 +1104,7 @@ def serve(db_path, host, port, media_dir=None):
                     except OSError:
                         print("Media cleanup deferred until next server start.", flush=True)
                     db.commit()
-                state_changed.notify_all()
+                pair_events.notify(member[0])
             self.event_detail = f" board_revision={revision} added={len(additions)} removed={len(removals)}"
             return self.reply(200, result)
 
@@ -946,7 +1138,7 @@ def serve(db_path, host, port, media_dir=None):
                         raise ValueError("Invalid device token")
                 except (ValueError, KeyError, TypeError, json.JSONDecodeError):
                     return self.reply(400, {"error": "Invalid device registration"})
-                with connect(db_path) as db:
+                with connect(db_path, initialize=False) as db:
                     db.execute("INSERT OR REPLACE INTO devices (pair_id, role, token, environment) VALUES (?, ?, ?, 'auto')",
                                (member[0], member[1], device_token))
                 return self.reply(200, {"registered": True, "pushConfigured": push_configured()})
@@ -961,7 +1153,7 @@ def serve(db_path, host, port, media_dir=None):
                         raise ValueError("Invalid draft")
                 except (ValueError, KeyError, TypeError, binascii.Error, json.JSONDecodeError):
                     return self.reply(400, {"error": "Invalid shared draft"})
-                with state_changed, connect(db_path) as db:
+                with connect(db_path, initialize=False) as db:
                     db.execute("BEGIN IMMEDIATE")
                     if board_update(db, member[0]) is not None:
                         return self.reply(409, {"error": "This pair uses the new whiteboard. Update CoupleDraw on both phones."})
@@ -970,7 +1162,7 @@ def serve(db_path, host, port, media_dir=None):
                     revision = (row[0] if row else 0) + 1
                     db.execute("INSERT OR REPLACE INTO shared_drafts VALUES (?, ?, ?, ?, ?)",
                                (member[0], member[1], revision, data, height))
-                    state_changed.notify_all()
+                    pair_events.notify(member[0])
                 self.event_detail = f" draft_revision={revision}"
                 return self.reply(200, {"role": member[1], "revision": revision})
             if self.path != "/v1/apply":
@@ -1030,7 +1222,7 @@ def serve(db_path, host, port, media_dir=None):
             except (ValueError, KeyError, TypeError, binascii.Error, json.JSONDecodeError):
                 return self.reply(400, {"error": "Invalid drawing request"})
 
-            with lock, connect(db_path) as db:
+            with media.access(exclusive=True), connect(db_path, initialize=False) as db:
                 db.execute("BEGIN IMMEDIATE")
                 board = board_update(db, member[0]) if source == "together" else None
                 if board is not None and (type(obj.get("boardRevision")) is not int or obj["boardRevision"] != board["revision"]):
@@ -1058,7 +1250,7 @@ def serve(db_path, host, port, media_dir=None):
                 except OSError:
                     print("Media cleanup deferred until next server start.", flush=True)
                 db.commit()
-                state_changed.notify_all()
+                pair_events.notify(member[0])
             self.event_detail = f" source={source} revision={current + 1}"
             if push_configured() or ntfy:
                 threading.Thread(target=notify_partner,

@@ -513,7 +513,7 @@ import UIKit
     }
 
     private func isolatedSyncPreferences() -> () -> Void {
-        let keys = ["syncEndpoint", "syncVersions", "syncDirty", "partnerAlertsEnabled"]
+        let keys = ["syncEndpoint", "syncVersions", "syncDirty", "partnerAlertsEnabled", "syncRetryUntil"]
         let previous = keys.map { UserDefaults.standard.object(forKey: $0) }
         keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
         return {
@@ -540,6 +540,7 @@ import UIKit
         defer { restorePreferences() }
         let (store, root) = temporaryStore()
         defer { try? FileManager.default.removeItem(at: root) }
+        var now = Date()
         var phase = 0
         var testToken = ""
         let sync = PairSync(transport: { request in
@@ -551,7 +552,7 @@ import UIKit
                                         backgroundPhoto: nil, drawingData: phase == 1 ? Data([1, 2, 3]) : Data(), drawingHeight: 844)
             return try self.stateReply(request, items: phase == 0 ? [] : [remote],
                                        etag: phase == 0 ? "\"initial\"" : "\"partner-v1\"")
-        }, readToken: { testToken }, writeToken: { testToken = $0 })
+        }, readToken: { testToken }, writeToken: { testToken = $0 }, clock: { now })
         defer { sync.suspend() }
         try await sync.configure(endpoint: "https://audit.invalid", token: "test-private-sync-token-A", store: store)
         sync.stop()
@@ -559,6 +560,7 @@ import UIKit
         await sync.refresh(store: store)
         XCTAssertTrue(sync.status.hasPrefix("Sync paused:"))
         XCTAssertTrue(store.revisions.isEmpty)
+        now = now.addingTimeInterval(120)
         phase = 2
         await sync.refresh(store: store)
         XCTAssertEqual(store.record(.second).backgroundHex, "#123456")
@@ -845,6 +847,7 @@ import UIKit
         defer { restorePreferences() }
         let (store, root) = temporaryStore()
         defer { try? FileManager.default.removeItem(at: root) }
+        var now = Date()
         var phase = 0
         var token = ""
         var acknowledgements = 0
@@ -855,7 +858,7 @@ import UIKit
             }
             let item = try self.relayRevision(drawingData: phase == 1 ? Data([1, 2, 3]) : Data())
             return try self.relayReply(request, items: phase == 0 ? [] : [item])
-        }, readToken: { token }, writeToken: { token = $0 })
+        }, readToken: { token }, writeToken: { token = $0 }, clock: { now })
         defer { sync.suspend() }
         try await sync.configure(endpoint: "https://relay.invalid", token: "private-phone-A", store: store)
         sync.stop()
@@ -863,6 +866,7 @@ import UIKit
         await sync.refresh(store: store)
         XCTAssertEqual(acknowledgements, 0)
         XCTAssertTrue(store.revisions.isEmpty)
+        now = now.addingTimeInterval(120)
         phase = 2
         let manifest = root.appendingPathComponent("relay-media.json")
         try FileManager.default.removeItem(at: manifest)
@@ -871,6 +875,7 @@ import UIKit
         XCTAssertEqual(acknowledgements, 0)
         XCTAssertTrue(sync.status.hasPrefix("Sync paused:"))
         try FileManager.default.removeItem(at: manifest)
+        now = now.addingTimeInterval(120)
         await sync.refresh(store: store)
         XCTAssertEqual(acknowledgements, 1)
         XCTAssertEqual(store.record(.second).backgroundHex, "#123456")
@@ -882,6 +887,7 @@ import UIKit
         let (store, root) = temporaryStore()
         defer { try? FileManager.default.removeItem(at: root) }
         let item = try relayRevision()
+        var now = Date()
         var phase = 0
         var token = ""
         var acknowledgements = 0
@@ -897,7 +903,7 @@ import UIKit
                                                             httpVersion: "HTTP/1.1", headerFields: nil)))
             }
             return try self.relayReply(request, items: phase == 0 ? [] : [item])
-        }, readToken: { token }, writeToken: { token = $0 })
+        }, readToken: { token }, writeToken: { token = $0 }, clock: { now })
         defer { sync.suspend() }
         try await sync.configure(endpoint: "https://relay.invalid", token: "private-phone-A", store: store)
         sync.stop()
@@ -905,6 +911,7 @@ import UIKit
         await sync.refresh(store: store)
         XCTAssertEqual(acknowledgements, 1)
         XCTAssertEqual(try CanvasStore(root: root).pendingRelayReceipts(identity: identity), [MediaReceipt(item)])
+        now = now.addingTimeInterval(120)
         phase = 2
         await sync.refresh(store: store)
         XCTAssertEqual(acknowledgements, 2)
@@ -1291,5 +1298,108 @@ import UIKit
         XCTAssertThrowsError(try sync.beginPairing(.create, endpoint: PairSync.defaultEndpoint))
         XCTAssertNil(sync.pairingAttempt)
         XCTAssertEqual(requests, 0)
+    }
+
+    func testLightweightShortcutKeepsAllOriginalsAndAcknowledgesOnlyAfterExport() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (main, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        main.updateBackground("#654321", on: .first)
+        UserDefaults.standard.set("https://shortcut.invalid", forKey: "syncEndpoint")
+        let chosen = try relayRevision()
+        let other = try relayRevision(source: "a", drawingData: Data([1, 2, 3]), color: .blue)
+        let shortcut = CanvasStore(root: root, shortcutChoice: .partner)
+        var acknowledgements = 0
+        var export: URL?
+        let sync = PairSync(transport: { request in
+            if request.url?.path == "/v1/media/ack" {
+                acknowledgements += 1
+                XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(export).path))
+                return try self.relayAckReply(request)
+            }
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-CoupleDraw-Wallpaper"), "partner")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-CoupleDraw-Board-History"), "1")
+            let (body, response) = try self.relayReply(request, items: [chosen, other])
+            var json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            let items = try XCTUnwrap(json["items"] as? [[String: Any]])
+            json["items"] = [items[0]]
+            var mediaOnly = items[1]; mediaOnly["drawingData"] = ""
+            json["mediaOnlyItems"] = [mediaOnly]
+            json.removeValue(forKey: "board")
+            return (try JSONSerialization.data(withJSONObject: json), response)
+        }, readToken: { "private-phone-A" })
+        defer { sync.suspend() }
+        try await sync.refreshForShortcut(store: shortcut, choice: .partner)
+        XCTAssertEqual(acknowledgements, 0)
+        XCTAssertTrue(shortcut.revisions.isEmpty)
+        XCTAssertNil(shortcut.whiteboard)
+        let identity = LocalMediaFiles.identifier(Data("https://shortcut.invalid|private-phone-A".utf8))
+        XCTAssertEqual(try shortcut.pendingRelayReceipts(identity: identity).count, 2)
+        export = try shortcut.wallpaperFileForShortcut(on: .second)
+        _ = try main.clearCache()
+        for item in [chosen, other] {
+            for ident in MediaReceipt(item).mediaIDs { XCTAssertNotNil(try shortcut.relayImage(ident)) }
+        }
+        try await sync.acknowledgeShortcutMedia(store: shortcut)
+        XCTAssertEqual(acknowledgements, 1)
+        XCTAssertTrue(try shortcut.pendingRelayReceipts(identity: identity).isEmpty)
+        let reopened = CanvasStore(root: root)
+        XCTAssertEqual(reopened.revisions.count, 1)
+        XCTAssertEqual(reopened.record(.first).backgroundHex, "#654321")
+        XCTAssertEqual(reopened.record(.second).backgroundPhoto, chosen.backgroundPhoto)
+    }
+
+    func testRetryAfterPreventsRequestsAcrossFreshShortcutInstances() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        UserDefaults.standard.set("https://retry.invalid", forKey: "syncEndpoint")
+        var now = Date(), requests = 0
+        let transport: (URLRequest) async throws -> (Data, URLResponse) = { request in
+            requests += 1
+            if requests == 1 {
+                return try self.pairingHTTPReply(request, ["error": "Busy"], status: 429,
+                                                headers: ["Retry-After": "120"])
+            }
+            return try self.stateReply(request)
+        }
+        let first = PairSync(transport: transport, readToken: { "private-A" }, clock: { now })
+        do { try await first.refreshForShortcut(store: store); XCTFail("429 must stop this invocation") }
+        catch { XCTAssertTrue(error is SyncHTTPError) }
+        let restarted = PairSync(transport: transport, readToken: { "private-A" }, clock: { now })
+        do { try await restarted.refreshForShortcut(store: store); XCTFail("Retry-After must survive reinitialization") }
+        catch { XCTAssertTrue(error is SyncHTTPError) }
+        XCTAssertEqual(requests, 1)
+        now = now.addingTimeInterval(122)
+        try await restarted.refreshForShortcut(store: store)
+        XCTAssertEqual(requests, 2)
+    }
+
+    func testStateFailuresBackOffWithoutRetryAfterAndResetOnSuccess() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (store, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        UserDefaults.standard.set("https://backoff.invalid", forKey: "syncEndpoint")
+        var now = Date(), requests = 0, failing = true
+        let sync = PairSync(transport: { request in
+            requests += 1
+            if failing { return try self.pairingHTTPReply(request, ["error": "Busy"], status: 503) }
+            return try self.stateReply(request)
+        }, readToken: { "private-A" }, clock: { now })
+        defer { sync.suspend() }
+        await sync.refresh(store: store)
+        await sync.refresh(store: store)
+        XCTAssertEqual(requests, 1)
+        now = now.addingTimeInterval(2)
+        await sync.refresh(store: store)
+        XCTAssertEqual(requests, 2)
+        failing = false
+        now = now.addingTimeInterval(3)
+        await sync.refresh(store: store)
+        await sync.refresh(store: store)
+        XCTAssertEqual(requests, 4)
     }
 }
