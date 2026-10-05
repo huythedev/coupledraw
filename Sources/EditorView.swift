@@ -121,12 +121,12 @@ struct EditorView: View {
                                  tool: $tool, inkColor: $inkColor, size: $size)
                 .environmentObject(store).environmentObject(sync)
         }
-        .alert("Could not save", isPresented: Binding(
-            get: { store.errorMessage != nil },
-            set: { if !$0 { store.errorMessage = nil } }
+        .alert(sync.updateNotice?.title ?? "Could not save", isPresented: Binding(
+            get: { !showFullScreen && !showPairing && (sync.updateNotice != nil || store.errorMessage != nil) },
+            set: { if !$0 { sync.updateNotice = nil; store.errorMessage = nil } }
         )) {
-            Button("OK") { store.errorMessage = nil }
-        } message: { Text(store.errorMessage ?? "Unknown error") }
+            Button("OK") { sync.updateNotice = nil; store.errorMessage = nil }
+        } message: { Text(sync.updateNotice?.errorDescription ?? store.errorMessage ?? "Unknown error") }
     }
 
     private var canvasSection: some View {
@@ -187,7 +187,7 @@ struct EditorView: View {
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture { if editable { showFullScreen = true } }
+        .onTapGesture { if editable { openDrawing() } }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(editable ? "Open \(slot.title) drawing editor" : "Partner's art preview")
         .accessibilityAddTraits(editable ? .isButton : .isImage)
@@ -254,7 +254,7 @@ struct EditorView: View {
 
     private var actionBar: some View {
         HStack(spacing: 10) {
-            Button { showFullScreen = true } label: {
+            Button { openDrawing() } label: {
                 Label("Draw", systemImage: "pencil.tip.crop.circle")
                     .frame(maxWidth: .infinity)
             }
@@ -286,6 +286,7 @@ struct EditorView: View {
             guard !applying else { return }
             applying = true
             defer { applying = false }
+            if selected == .together, !sync.requireSharedEditing(store: store, allowSnapshot: true) { return }
             if selected == .together, store.whiteboard != nil {
                 guard await sync.applyWhiteboard(store: store) else { return }
             } else {
@@ -302,5 +303,10 @@ struct EditorView: View {
             withAnimation(.easeInOut(duration: 0.25)) { appliedToast = nil }
             toastID = nil
         }
+    }
+
+    private func openDrawing() {
+        if slot == .together, !sync.requireSharedEditing(store: store, allowSnapshot: true) { return }
+        showFullScreen = true
     }
 }

@@ -22,6 +22,7 @@ private struct ServerState: Decodable {
     let ntfyTopic: String?
     let ntfyBaseURL: String?
     let items: [SyncedRevision]
+    let mediaOnlyItems: [SyncedRevision]?
     let sharedBase: SyncedRevision?
     let drafts: [SharedDraft]?
     let draftRevisions: [String: Int]?
@@ -32,6 +33,33 @@ private struct ServerState: Decodable {
     let mediaRequests: [String]?
     let boardSeedTag: String?
     let board: BoardUpdate?
+    let capabilities: SyncCapabilities?
+    enum CodingKeys: String, CodingKey {
+        case role, pushConfigured, ntfyTopic, ntfyBaseURL, items, mediaOnlyItems, sharedBase, drafts, draftRevisions, hasPartnerArt, boardProtocol, mediaProtocol, mediaInventory, mediaRequests, boardSeedTag, board, capabilities
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        role = try values.decode(String.self, forKey: .role)
+        pushConfigured = try values.decodeIfPresent(Bool.self, forKey: .pushConfigured)
+        ntfyTopic = try values.decodeIfPresent(String.self, forKey: .ntfyTopic)
+        ntfyBaseURL = try values.decodeIfPresent(String.self, forKey: .ntfyBaseURL)
+        items = try values.decode([SyncedRevision].self, forKey: .items)
+        mediaOnlyItems = try values.decodeIfPresent([SyncedRevision].self, forKey: .mediaOnlyItems)
+        sharedBase = try values.decodeIfPresent(SyncedRevision.self, forKey: .sharedBase)
+        drafts = try values.decodeIfPresent([SharedDraft].self, forKey: .drafts)
+        draftRevisions = try values.decodeIfPresent([String: Int].self, forKey: .draftRevisions)
+        hasPartnerArt = try values.decodeIfPresent(Bool.self, forKey: .hasPartnerArt)
+        boardProtocol = try values.decodeIfPresent(Int.self, forKey: .boardProtocol)
+        mediaProtocol = try values.decodeIfPresent(Int.self, forKey: .mediaProtocol)
+        mediaInventory = try values.decodeIfPresent([MediaReceipt].self, forKey: .mediaInventory)
+        mediaRequests = try values.decodeIfPresent([String].self, forKey: .mediaRequests)
+        boardSeedTag = try values.decodeIfPresent(String.self, forKey: .boardSeedTag)
+        capabilities = try values.decodeIfPresent(SyncCapabilities.self, forKey: .capabilities)
+        // Unknown feature payloads must not stop compatible wallpaper sync.
+        board = boardProtocol == 1 && capabilities?.supports("whiteboard") != false
+            ? try values.decodeIfPresent(BoardUpdate.self, forKey: .board) : nil
+    }
 }
 
 private struct RelayEnvelope: Decodable {
@@ -50,12 +78,16 @@ private struct SharedDraft: Decodable {
     let drawingData: Data
     let drawingHeight: Double
 }
+private struct SharedDraftBody: Encodable {
+    let drawingData: Data
+    let drawingHeight: Double
+}
 
 private struct BoardSeed: Encodable {
     let seedTag: String
     let strokes: [SharedStroke]
 }
-private struct BoardConflict: Decodable { let board: BoardUpdate? }
+private struct BoardConflict: Decodable { let board: BoardUpdate?; let code: String? }
 
 private struct DeviceRegistration: Encodable { let deviceToken: String }
 
@@ -75,7 +107,12 @@ private struct PublishBody: Encodable {
     let stickers: [CanvasSticker]
 }
 
-private struct ServerError: Decodable { let error: String }
+private struct ServerError: Decodable {
+    let error: String
+    let code: String?
+    let feature: String?
+    let target: UpdateNotice.Target?
+}
 
 struct PairingInvite: Equatable {
     let endpoint: String
@@ -160,6 +197,8 @@ private enum SyncTransport {
     @Published private(set) var endpoint = UserDefaults.standard.string(forKey: "syncEndpoint") ?? ""
     @Published private(set) var pairingAttempt: PairingAttempt?
     @Published private(set) var completingPairing = false
+    @Published var updateNotice: UpdateNotice?
+    @Published private(set) var capabilities: SyncCapabilities?
     private var token: String { readToken() ?? "" }
     private var versions: [CanvasSlot: Int] = {
         let saved = UserDefaults.standard.dictionary(forKey: "syncVersions") as? [String: Int] ?? [:]
@@ -178,21 +217,29 @@ private enum SyncTransport {
     private var longPollSupported = false
     private var longPollAttempted = false
     private var longPollWaitSeconds = 20
-    private var retryShortWait = false
     private var supportsStickerSync = false
     private var supportsMediaRelay = false
+    private var supportsWhiteboard = false
+    private var supportsLegacyDrafts = false
+    private var legacyDraftData: Data?
     private weak var activeBoard: SharedWhiteboard?
     private var sessionID = UUID()
     private var draftTask: Task<Void, Never>?
     private var draftUploadFailed = false
+    private var stateRetry = SyncRetrySchedule()
+    private var boardRetry = SyncRetrySchedule()
+    private var relayRetry = SyncRetrySchedule()
     private let transport: (URLRequest) async throws -> (Data, URLResponse)
+    private let clock: () -> Date
     private let readToken: () -> String?
     private let writeToken: (String) throws -> Void
     private let writePairing: (String?) throws -> Void
 
     init(transport: ((URLRequest) async throws -> (Data, URLResponse))? = nil,
          readToken: (() -> String?)? = nil, writeToken: ((String) throws -> Void)? = nil,
-         readPairing: (() -> String?)? = nil, writePairing: ((String?) throws -> Void)? = nil) {
+         readPairing: (() -> String?)? = nil, writePairing: ((String?) throws -> Void)? = nil,
+         clock: @escaping () -> Date = { Date() }) {
+        self.clock = clock
         self.transport = transport ?? { try await SyncTransport.session.data(for: $0) }
         self.readToken = readToken ?? { SecretStore.read() }
         self.writeToken = writeToken ?? { try SecretStore.write($0) }
@@ -211,8 +258,13 @@ private enum SyncTransport {
     private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
         let session = sessionID
         do {
+            let remaining = SyncRetryGate.remaining(request, now: clock())
+            if remaining > 0 {
+                throw SyncHTTPError(status: 429, message: "The server asked this phone to wait before retrying.", retryAfter: remaining)
+            }
             let result = try await transport(request)
             guard session == sessionID, !Task.isCancelled else { throw CancellationError() }
+            if let http = result.1 as? HTTPURLResponse { SyncRetryGate.record(http, request: request, now: clock()) }
             if let http = result.1 as? HTTPURLResponse, [301, 302, 303, 307, 308].contains(http.statusCode) {
                 throw SyncError.server("The server redirected this request. Enter its final address in Pair before syncing.")
             }
@@ -300,6 +352,7 @@ private enum SyncTransport {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         if wait { request.setValue("wait=20", forHTTPHeaderField: "Prefer") }
+        request.setValue("1", forHTTPHeaderField: "X-CoupleDraw-API")
         var body = ["secret": attempt.secret]
         if action == "join" { body["code"] = attempt.code }
         request.httpBody = try JSONEncoder().encode(body)
@@ -309,9 +362,11 @@ private enum SyncTransport {
         guard pairingAttempt?.secret == attempt.secret else { throw CancellationError() }
         guard let http = response as? HTTPURLResponse else { throw SyncError.response }
         if http.statusCode == 404 || http.statusCode == 401 {
-            throw SyncError.server("Update the Python server to enable Create Pair and Join Pair. Existing tokens still work under Manual pairing.")
+            let notice = UpdateNotice(feature: "pairing", target: .server)
+            updateNotice = notice
+            throw notice
         }
-        guard http.statusCode == 200 else { throw serverError(data) }
+        guard http.statusCode == 200 else { throw serverError(data, response: response as? HTTPURLResponse) }
         return try JSONDecoder().decode(PairingReply.self, from: data)
     }
 
@@ -355,6 +410,7 @@ private enum SyncTransport {
         guard let url = URL(string: trimmed), Self.allowsServerURL(url) else { throw SyncError.invalidServerURL }
         let oldEndpoint = endpoint, oldToken = self.token
         let oldVersions = versions, oldDirty = dirty, oldRole = role
+        let oldSupport = (capabilities, supportsWhiteboard, supportsLegacyDrafts, supportsStickerSync, supportsMediaRelay)
         let changedPair = trimmed != oldEndpoint || newToken != oldToken
         if changedPair {
             stop()
@@ -363,6 +419,7 @@ private enum SyncTransport {
             activeBoard = nil
             sessionID = UUID()
             draftUploadFailed = false
+            stateRetry.reset(); boardRetry.reset(); relayRetry.reset()
             stateETag = nil
             knownSnapshotVersions = [:]
             knownDraftVersions = [:]
@@ -370,7 +427,9 @@ private enum SyncTransport {
             longPollSupported = false
             longPollAttempted = false
             longPollWaitSeconds = 20
-            retryShortWait = false
+            capabilities = nil; supportsWhiteboard = false; supportsLegacyDrafts = false
+            supportsStickerSync = false; supportsMediaRelay = false; legacyDraftData = nil
+            updateNotice = nil
         }
         endpoint = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let configuringSession = sessionID
@@ -404,6 +463,7 @@ private enum SyncTransport {
             try? writeToken(oldToken)
             UserDefaults.standard.set(oldEndpoint, forKey: "syncEndpoint")
             versions = oldVersions; dirty = oldDirty; role = oldRole
+            (capabilities, supportsWhiteboard, supportsLegacyDrafts, supportsStickerSync, supportsMediaRelay) = oldSupport
             persistState()
             stateETag = nil
             knownSnapshotVersions = [:]; knownDraftVersions = [:]; knowsSharedBase = false
@@ -433,8 +493,10 @@ private enum SyncTransport {
                 if Task.isCancelled { break }
                 // A recent server holds the request for up to 20 seconds. Older
                 // servers answer immediately, so check them less often.
-                try? await Task.sleep(for: self.longPollSupported ? .milliseconds(200) :
-                                      self.retryShortWait ? .seconds(1) : .seconds(30))
+                let failureDelay = self.stateRetry.remaining(at: self.clock())
+                let delay = failureDelay > 0 ? min(60, failureDelay) :
+                    self.longPollSupported ? 0.2 : Double.random(in: 25...35)
+                try? await Task.sleep(for: .seconds(delay))
             }
         }
     }
@@ -451,14 +513,20 @@ private enum SyncTransport {
 
     /// A Shortcut gets one fresh response even when the main app is suspended.
     /// Do not return a stale paired wallpaper if this request fails.
-    func refreshForShortcut(store: CanvasStore) async throws {
+    func refreshForShortcut(store: CanvasStore, choice: WallpaperChoice? = nil) async throws {
         guard configured else { return }
-        guard let state = try await fetch(force: true, store: store) else { throw SyncError.response }
+        guard let state = try await fetch(force: true, store: store, wallpaperChoice: choice) else { throw SyncError.response }
         role = state.role
         pushConfigured = state.pushConfigured ?? false
         ntfyTopic = state.ntfyTopic
         ntfyBaseURL = state.ntfyBaseURL
-        try await incorporate(state, store: store, serveMediaRequests: false)
+        try await incorporate(state, store: store, serveMediaRequests: false,
+                              shortcutChoice: choice, acknowledgeMedia: choice == nil)
+    }
+
+    /// Called only after the selected file has been exported successfully.
+    func acknowledgeShortcutMedia(store: CanvasStore) async throws {
+        try await synchronizeRelayMedia([], store: store)
     }
 
     func enablePartnerAlerts() async {
@@ -497,7 +565,7 @@ private enum SyncTransport {
             request.httpBody = try JSONEncoder().encode(DeviceRegistration(deviceToken: deviceToken))
             let (data, response) = try await send(request)
             guard let http = response as? HTTPURLResponse else { throw SyncError.response }
-            guard http.statusCode == 200 else { throw serverError(data) }
+            guard http.statusCode == 200 else { throw serverError(data, response: response as? HTTPURLResponse) }
             let result = try JSONDecoder().decode(DeviceRegistrationResult.self, from: data)
             pushConfigured = result.pushConfigured
             notificationsStatus = result.registered && result.pushConfigured ?
@@ -513,12 +581,14 @@ private enum SyncTransport {
     }
 
     func scheduleSharedDraft(store: CanvasStore) {
+        if store.whiteboard == nil { scheduleLegacyDraft(store: store); return }
+        guard supportsWhiteboard else { return }
         guard configured, let board = store.whiteboard, board.hasPending, draftTask == nil else { return }
         let session = sessionID
         draftTask = Task { [weak self, weak board] in
             guard let self, let board else { return }
-            // Batch quick events without keeping a three-second polling timer alive.
-            try? await Task.sleep(for: .milliseconds(150))
+            // Keep a failed patch's ID and captured base revision stable while waiting.
+            try? await Task.sleep(for: .seconds(min(60, max(0.15, self.boardRetry.remaining(at: self.clock())))))
             while !Task.isCancelled && self.sessionID == session, let patch = board.nextPatch {
                 do {
                     var request = try self.authorizedRequest(path: "/v1/board/ops")
@@ -529,6 +599,7 @@ private enum SyncTransport {
                     let (data, response) = try await self.send(request)
                     guard !Task.isCancelled, self.sessionID == session else { break }
                     guard let http = response as? HTTPURLResponse else { throw SyncError.response }
+                    if let notice = self.updateError(data) { throw notice }
                     if http.statusCode == 409,
                        let conflict = try? JSONDecoder().decode(BoardConflict.self, from: data),
                        let current = conflict.board {
@@ -536,21 +607,87 @@ private enum SyncTransport {
                         guard store.apply(.together, recovery: true) != nil else { throw SyncError.server("Could not keep a recovery copy. Edits are still queued.") }
                         try board.resolveConflict(current)
                         self.draftUploadFailed = true
-                        store.errorMessage = "Your partner changed the same stroke first. Your version is saved in History; the shared board has refreshed."
+                        store.errorMessage = conflict.code == "history_compacted"
+                            ? "These queued edits are older than the server's sync history. Your version is saved in History; the shared board has refreshed."
+                            : "Your partner changed the same stroke first. Your version is saved in History; the shared board has refreshed."
                         break
                     }
-                    guard http.statusCode == 200 else { throw self.serverError(data) }
+                    guard http.statusCode == 200 else { throw self.serverError(data, response: response as? HTTPURLResponse) }
                     try board.receive(JSONDecoder().decode(BoardUpdate.self, from: data), acknowledging: patch.id)
                     self.draftUploadFailed = false
+                    self.boardRetry.reset()
                 } catch {
                     if Task.isCancelled || self.sessionID != session { break }
                     self.draftUploadFailed = true
+                    self.boardRetry.fail(error, now: self.clock())
+                    if let notice = error as? UpdateNotice { self.updateNotice = notice }
                     self.status = "Edits saved on this phone · waiting to sync: \(error.localizedDescription)"
                     break
                 }
             }
             if self.sessionID == session { self.draftTask = nil }
         }
+    }
+
+    private func scheduleLegacyDraft(store: CanvasStore) {
+        guard configured, supportsLegacyDrafts, store.liveSharedEnabled,
+              store.sharedOwnData != legacyDraftData, draftTask == nil else { return }
+        let session = sessionID
+        draftTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: .seconds(min(60, max(0.15, self.boardRetry.remaining(at: self.clock())))))
+            while !Task.isCancelled, session == self.sessionID,
+                  store.sharedOwnData != self.legacyDraftData {
+                let data = store.sharedOwnData
+                do {
+                    var request = try self.authorizedRequest(path: "/v1/draft")
+                    request.httpMethod = "POST"
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.httpBody = try JSONEncoder().encode(SharedDraftBody(drawingData: data,
+                                                               drawingHeight: store.record(.together).drawingHeight))
+                    let (body, response) = try await self.send(request)
+                    guard let http = response as? HTTPURLResponse else { throw SyncError.response }
+                    if [404, 405].contains(http.statusCode) { throw UpdateNotice(feature: "legacyDrafts", target: .server) }
+                    guard http.statusCode == 200 else { throw self.serverError(body, response: http) }
+                    self.legacyDraftData = data
+                    self.draftUploadFailed = false
+                    self.boardRetry.reset()
+                } catch {
+                    guard !Task.isCancelled, session == self.sessionID else { break }
+                    self.draftUploadFailed = true
+                    self.boardRetry.fail(error, now: self.clock())
+                    if let notice = error as? UpdateNotice { self.updateNotice = notice }
+                    self.status = "Edits saved on this phone · waiting to sync: \(error.localizedDescription)"
+                    break
+                }
+            }
+            if session == self.sessionID { self.draftTask = nil }
+        }
+    }
+
+    /// User actions gate only their feature. Discovery failures never clear art.
+    func requireSharedEditing(store: CanvasStore, allowSnapshot: Bool = false) -> Bool {
+        if allowSnapshot && capabilities == nil { return true }
+        guard configured, role != nil, !supportsWhiteboard, !supportsLegacyDrafts else { return true }
+        updateNotice = capabilities?.missing("whiteboard", withPartner: true) ??
+            UpdateNotice(feature: "whiteboard", target: .server)
+        return false
+    }
+
+    private func canPublish(_ record: CanvasRecord) -> Bool {
+        if let notice = capabilities?.missing("wallpaper") { updateNotice = notice; return false }
+        if !record.stickers.isEmpty {
+            if let notice = capabilities?.missing("stickers", withPartner: true) {
+                updateNotice = notice; return false
+            }
+            if !supportsStickerSync {
+                updateNotice = UpdateNotice(feature: "stickers", target: .server); return false
+            }
+        }
+        if record.backgroundPhoto != nil, let notice = capabilities?.missing("photos", withPartner: true) {
+            updateNotice = notice; return false
+        }
+        return true
     }
 
     func flushSharedDraft(store: CanvasStore) async -> Bool {
@@ -577,10 +714,7 @@ private enum SyncTransport {
                 return false
             }
             let record = store.displayedRecord(.together)
-            guard record.stickers.isEmpty || supportsStickerSync else {
-                store.errorMessage = "Update the Python server to this version before sharing stickers. Your draft is saved locally."
-                return false
-            }
+            guard canPublish(record) else { return false }
             let capturedRevision = board.revision
             do {
                 var request = try authorizedRequest(path: "/v1/apply")
@@ -594,8 +728,9 @@ private enum SyncTransport {
                     stickers: record.stickers))
                 let (data, response) = try await send(request)
                 guard let http = response as? HTTPURLResponse else { throw SyncError.response }
+                if let notice = updateError(data) { throw notice }
                 if http.statusCode == 409 { continue }
-                guard http.statusCode == 200 else { throw serverError(data) }
+                guard http.statusCode == 200 else { throw serverError(data, response: response as? HTTPURLResponse) }
                 let item = try store.decodeSynced(SyncedRevision.self, from: data)
                 let current = store.record(.together)
                 let unchangedBackground = current.backgroundHex == record.backgroundHex &&
@@ -612,6 +747,7 @@ private enum SyncTransport {
                 return true
             } catch is CancellationError { return false }
             catch {
+                if let notice = error as? UpdateNotice { updateNotice = notice; return false }
                 store.errorMessage = "Apply could not be confirmed: \(error.localizedDescription). Reconnect and try again."
                 return false
             }
@@ -637,9 +773,10 @@ private enum SyncTransport {
     }
 
     func refresh(store: CanvasStore, waitForChange: Bool = false) async {
-        guard configured else { return }
+        guard configured, stateRetry.remaining(at: clock()) == 0 else { return }
         do {
             guard let state = try await fetch(waitForChange: waitForChange, store: store) else {
+                stateRetry.reset()
                 try await synchronizeRelayMedia([], store: store)
                 scheduleSharedDraft(store: store)
                 return
@@ -649,12 +786,13 @@ private enum SyncTransport {
             ntfyTopic = state.ntfyTopic
             ntfyBaseURL = state.ntfyBaseURL
             try await incorporate(state, store: store)
+            stateRetry.reset()
             let message = connectedStatus(for: state.role)
-            retryShortWait = false
             if status != message && !draftUploadFailed { status = message }
             scheduleSharedDraft(store: store)
         } catch {
             if Task.isCancelled || error is CancellationError { return }
+            stateRetry.fail(error, now: clock())
             stateETag = nil
             knownSnapshotVersions = [:]
             knownDraftVersions = [:]
@@ -663,13 +801,12 @@ private enum SyncTransport {
                 // Recovery only checks while open. Do not turn a missing photo
                 // into the normal rapid retry used for a proxy timeout.
                 longPollSupported = false
-                retryShortWait = false
-            } else if waitForChange {
+            } else if waitForChange, let network = error as? URLError,
+                      [.timedOut, .networkConnectionLost].contains(network.code) {
                 longPollAttempted = true
                 longPollSupported = false
                 // Some reverse proxies close idle connections before 20 seconds.
                 // A shorter wait can keep instant updates working on those VPSes.
-                retryShortWait = longPollWaitSeconds == 20
                 longPollWaitSeconds = 10
             }
             status = "Sync paused: \(error.localizedDescription)"
@@ -682,14 +819,29 @@ private enum SyncTransport {
             "Connected as \(role) · checking every 30s"
     }
 
-    private func incorporate(_ state: ServerState, store: CanvasStore, serveMediaRequests: Bool = true) async throws {
+    private func incorporate(_ state: ServerState, store: CanvasStore, serveMediaRequests: Bool = true,
+                             shortcutChoice: WallpaperChoice? = nil, acknowledgeMedia: Bool = true) async throws {
         let session = sessionID
-        supportsStickerSync = state.mediaProtocol == 1 || state.mediaProtocol == 2
+        capabilities = state.capabilities
+        supportsStickerSync = state.capabilities?.supports("stickers") ??
+            (state.mediaProtocol == 1 || state.mediaProtocol == 2)
         supportsMediaRelay = state.mediaProtocol == 2
-        if state.boardProtocol != 1 {
-            throw SyncError.server("Update the Python server to this source version to enable the shared whiteboard.")
-        }
-        if state.boardProtocol == 1 {
+        supportsWhiteboard = state.boardProtocol == 1 &&
+            (state.capabilities?.supports("whiteboard", withPartner: true) ?? true) &&
+            state.capabilities?.whiteboardReady != false
+        supportsLegacyDrafts = state.capabilities?.supports("legacyDrafts") ?? (state.drafts != nil)
+        if shortcutChoice == nil, supportsWhiteboard {
+            if state.board == nil, state.boardSeedTag != nil, knowsSharedBase {
+                // Migration needs every legacy layer, including those omitted
+                // by a delta response from an older server.
+                if let draftTask { draftTask.cancel(); await draftTask.value }
+                knowsSharedBase = false; knownDraftVersions = [:]; stateETag = nil
+                guard let complete = try await fetch(force: true, store: store) else { throw SyncError.response }
+                try await incorporate(complete, store: store, serveMediaRequests: serveMediaRequests,
+                                      acknowledgeMedia: acknowledgeMedia)
+                return
+            }
+            if store.whiteboard == nil, let draftTask { draftTask.cancel(); await draftTask.value }
             try store.activateWhiteboard(identity: boardIdentity)
             activeBoard = store.whiteboard
             if let board = store.whiteboard {
@@ -710,9 +862,34 @@ private enum SyncTransport {
                     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                         // Fetch all legacy layers again on a concurrent migration.
                         stateETag = nil; knowsSharedBase = false; knownDraftVersions = [:]
-                        throw serverError(data)
+                        throw serverError(data, response: response as? HTTPURLResponse)
                     }
                     try board.receive(JSONDecoder().decode(BoardUpdate.self, from: data))
+                }
+            }
+        } else if shortcutChoice == nil {
+            // Preserve any queued modern board on disk when a server is older.
+            // Own/partner wallpaper sync must continue independently of it.
+            activeBoard = nil
+            if let board = store.whiteboard, !board.isEditing {
+                if board.hasPending { _ = store.apply(.together, recovery: true) }
+                store.deactivateWhiteboard()
+            }
+            if supportsLegacyDrafts {
+                store.enableLiveShared()
+                if versions[.together] == nil, dirty.contains(.together) {
+                    store.migrateUnappliedSharedCanvas()
+                }
+                if let base = state.sharedBase { try store.setSharedBase(base) }
+                for draft in state.drafts ?? [] {
+                    if draft.role == state.role {
+                        if legacyDraftData == nil, !dirty.contains(.together), store.sharedOwnData.isEmpty {
+                            try store.updateSharedOwn(draft.drawingData, drawingHeight: draft.drawingHeight)
+                            legacyDraftData = store.sharedOwnData
+                        }
+                    } else {
+                        try store.updateSharedPartner(draft.drawingData, drawingHeight: draft.drawingHeight)
+                    }
                 }
             }
         }
@@ -723,15 +900,16 @@ private enum SyncTransport {
         }
         for item in state.items {
             guard session == sessionID, !Task.isCancelled else { throw CancellationError() }
-            guard let slot = slot(for: item.source, role: state.role) else { continue }
+            guard let slot = slot(for: item.source, role: state.role),
+                  shortcutChoice == nil || shortcutChoice?.slot == slot else { continue }
             let previous = versions[slot] ?? 0
-            if item.revision > previous && (slot == .together && store.liveSharedEnabled || !dirty.contains(slot)) {
+            if item.revision > previous && (slot == .together && (store.liveSharedEnabled || shortcutChoice != nil) || !dirty.contains(slot)) {
                 try store.acceptRemote(item, on: slot, localRole: state.role,
-                                       keepSharedBase: slot == .together && store.liveSharedEnabled,
+                                       keepSharedBase: slot == .together && (store.liveSharedEnabled || shortcutChoice != nil),
                                        keepSharedBackground: dirty.contains(.together))
                 versions[slot] = item.revision
                 persistState()
-                if ntfyTopic == nil && (!pushCapable || !pushConfigured),
+                if shortcutChoice == nil, ntfyTopic == nil && (!pushCapable || !pushConfigured),
                    item.author != state.role,
                    UserDefaults.standard.bool(forKey: "partnerAlertsEnabled"),
                    UIApplication.shared.applicationState == .active {
@@ -742,7 +920,7 @@ private enum SyncTransport {
         guard session == sessionID, !Task.isCancelled else { throw CancellationError() }
         if supportsMediaRelay {
             guard let inventory = state.mediaInventory else { throw SyncError.response }
-            let originals = state.items + (state.sharedBase.map { [$0] } ?? [])
+            let originals = state.items + (state.mediaOnlyItems ?? []) + (state.sharedBase.map { [$0] } ?? [])
             try store.retainRelayMedia(originals, inventory: inventory, identity: boardIdentity, complete: true)
             let requests = state.mediaRequests ?? []
             let identifiers = Set(inventory.flatMap(\.mediaIDs))
@@ -754,7 +932,9 @@ private enum SyncTransport {
         for item in state.items { knownSnapshotVersions[item.source] = max(knownSnapshotVersions[item.source] ?? 0, item.revision) }
         for draft in state.drafts ?? [] { knownDraftVersions[draft.role] = draft.revision }
         if state.drafts != nil { knowsSharedBase = true }
-        try await synchronizeRelayMedia(serveMediaRequests ? state.mediaRequests ?? [] : [], store: store)
+        if acknowledgeMedia {
+            try await synchronizeRelayMedia(serveMediaRequests ? state.mediaRequests ?? [] : [], store: store)
+        }
     }
 
     private func retainPublishedMedia(_ item: SyncedRevision, response: HTTPURLResponse, store: CanvasStore) async throws {
@@ -767,7 +947,7 @@ private enum SyncTransport {
     /// Receipt retries are independent of wallpaper rendering. A failed POST
     /// leaves a durable pending receipt and the server keeps its original.
     private func synchronizeRelayMedia(_ requests: [String], store: CanvasStore) async throws {
-        guard supportsMediaRelay else { return }
+        guard supportsMediaRelay, relayRetry.remaining(at: clock()) == 0 else { return }
         let session = sessionID
         let identity = boardIdentity
         do {
@@ -781,7 +961,7 @@ private enum SyncTransport {
                 let (data, response) = try await send(request)
                 guard let http = response as? HTTPURLResponse else { throw SyncError.response }
                 if http.statusCode == 404 || http.statusCode == 409 { continue } // Superseded while resending.
-                guard http.statusCode == 200 else { throw serverError(data) }
+                guard http.statusCode == 200 else { throw serverError(data, response: response as? HTTPURLResponse) }
             }
             let pending = try store.pendingRelayReceipts(identity: identity)
             guard !pending.isEmpty else { return }
@@ -793,12 +973,14 @@ private enum SyncTransport {
             let (data, response) = try await send(request)
             guard session == sessionID, !Task.isCancelled else { throw CancellationError() }
             guard let http = response as? HTTPURLResponse else { throw SyncError.response }
-            guard http.statusCode == 200 else { throw serverError(data) }
+            guard http.statusCode == 200 else { throw serverError(data, response: response as? HTTPURLResponse) }
             let accepted = try JSONDecoder().decode(MediaAcknowledgementResult.self, from: data).accepted
             guard accepted.allSatisfy({ pending.contains($0) }) else { throw SyncError.response }
             try store.confirmRelayReceipts(accepted, identity: identity)
+            relayRetry.reset()
         } catch is CancellationError { throw CancellationError() }
         catch {
+            relayRetry.fail(error, now: clock())
             // The originals and pending receipts remain on disk. Retry after
             // the next foreground state response or Shortcut invocation.
         }
@@ -822,10 +1004,11 @@ private enum SyncTransport {
         guard configured else { return }
         if role == nil { await refresh(store: store) }
         guard let role else { return }
-        guard record.stickers.isEmpty || supportsStickerSync else {
-            status = "Saved on this phone. Update the Python server before sharing stickers."
-            store.errorMessage = status
-            return
+        guard canPublish(record) else { return }
+        if slot == .together, store.liveSharedEnabled, store.whiteboard == nil {
+            scheduleSharedDraft(store: store)
+            if let draftTask { await draftTask.value }
+            guard !draftUploadFailed else { return }
         }
         let source = source(for: slot, role: role)
         do {
@@ -839,16 +1022,18 @@ private enum SyncTransport {
                 drawingHeight: record.drawingHeight, stickers: record.stickers))
             let (data, response) = try await send(request)
             guard let http = response as? HTTPURLResponse else { throw SyncError.response }
+            if let notice = updateError(data) { throw notice }
             if http.statusCode == 409 {
                 status = "Edit conflict on \(slot.rawValue). Your local drawing is safe; ask your partner to pause, then resolve before publishing."
                 return
             }
-            guard http.statusCode == 200 else { throw serverError(data) }
+            guard http.statusCode == 200 else { throw serverError(data, response: response as? HTTPURLResponse) }
             let item = try store.decodeSynced(SyncedRevision.self, from: data)
             versions[slot] = max(versions[slot] ?? 0, item.revision)
             if item.backgroundPhoto != record.backgroundPhoto {
                 persistState()
                 status = "Saved locally; update the Python server to sync photo backgrounds."
+                updateNotice = UpdateNotice(feature: "photos", target: .server)
                 return
             }
             try await retainPublishedMedia(item, response: http, store: store)
@@ -858,12 +1043,17 @@ private enum SyncTransport {
             status = unchanged ? "Published \(slot.rawValue) · revision \(item.revision)" :
                 "Published revision \(item.revision) · newer edits remain on this phone"
         } catch is CancellationError { return }
-        catch { status = "Saved locally; sync failed: \(error.localizedDescription)" }
+        catch {
+            if let notice = error as? UpdateNotice { updateNotice = notice }
+            status = "Saved locally; sync failed: \(error.localizedDescription)"
+        }
     }
 
-    private func fetch(force: Bool = false, waitForChange: Bool = false, store: CanvasStore) async throws -> ServerState? {
+    private func fetch(force: Bool = false, waitForChange: Bool = false, store: CanvasStore,
+                       wallpaperChoice: WallpaperChoice? = nil) async throws -> ServerState? {
         let session = sessionID
         var request = try authorizedRequest(path: "/v1/state")
+        if let wallpaperChoice { request.setValue(wallpaperChoice.rawValue, forHTTPHeaderField: "X-CoupleDraw-Wallpaper") }
         if let activeBoard, activeBoard.revision > 0, !force {
             request.setValue(String(activeBoard.revision), forHTTPHeaderField: "X-CoupleDraw-Board")
         }
@@ -893,14 +1083,13 @@ private enum SyncTransport {
             longPollSupported = http.value(forHTTPHeaderField: "X-CoupleDraw-Long-Poll") == "1"
         }
         if http.statusCode == 304 {
-            retryShortWait = false
             if let role {
                 let message = connectedStatus(for: role)
                 if status != message && !draftUploadFailed { status = message }
             }
             return nil
         }
-        guard http.statusCode == 200 else { throw serverError(data) }
+        guard http.statusCode == 200 else { throw serverError(data, response: response as? HTTPURLResponse) }
         let envelope = try JSONDecoder().decode(RelayEnvelope.self, from: data)
         guard envelope.role == "A" || envelope.role == "B" else { throw SyncError.response }
         if envelope.mediaProtocol == 2 {
@@ -913,7 +1102,7 @@ private enum SyncTransport {
                 recovery.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 recovery.httpBody = try JSONEncoder().encode(MediaRecoveryRequest(mediaIDs: missing))
                 let (body, result) = try await send(recovery)
-                guard let response = result as? HTTPURLResponse, response.statusCode == 200 else { throw serverError(body) }
+                guard let response = result as? HTTPURLResponse, response.statusCode == 200 else { throw serverError(body, response: result as? HTTPURLResponse) }
                 throw SyncError.mediaPending
             }
         }
@@ -931,11 +1120,25 @@ private enum SyncTransport {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         request.setValue("2", forHTTPHeaderField: "X-CoupleDraw-Media")
+        request.setValue("1", forHTTPHeaderField: "X-CoupleDraw-Board-History")
+        request.setValue("1", forHTTPHeaderField: "X-CoupleDraw-API")
+        if let protocols = try? JSONEncoder().encode(SyncCapabilities.clientProtocols) {
+            request.setValue(String(data: protocols, encoding: .utf8), forHTTPHeaderField: "X-CoupleDraw-Protocols")
+        }
         return request
     }
 
-    private func serverError(_ data: Data) -> Error {
-        SyncError.server((try? JSONDecoder().decode(ServerError.self, from: data).error) ?? "Server rejected request")
+    private func serverError(_ data: Data, response: HTTPURLResponse? = nil) -> Error {
+        if let notice = updateError(data) { return notice }
+        return SyncHTTPError(status: response?.statusCode ?? 0,
+                      message: (try? JSONDecoder().decode(ServerError.self, from: data).error) ?? "Server rejected request",
+                      retryAfter: SyncRetrySchedule.retryAfter(response?.value(forHTTPHeaderField: "Retry-After"), now: clock()))
+    }
+
+    private func updateError(_ data: Data) -> UpdateNotice? {
+        guard let error = try? JSONDecoder().decode(ServerError.self, from: data),
+              error.code == "update_required", let feature = error.feature, let target = error.target else { return nil }
+        return UpdateNotice(feature: feature, target: target)
     }
 
     private func source(for slot: CanvasSlot, role: String) -> String {

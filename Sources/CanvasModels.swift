@@ -46,7 +46,10 @@ struct WallpaperSize: Codable, Equatable {
     let width: Int
     let height: Int
 
-    var isValid: Bool { width >= 320 && height > width && width <= 5000 && height <= 10000 }
+    var isValid: Bool {
+        width >= 320 && height > width && width <= 5000 && height <= 10000 &&
+            width * height <= WallpaperRenderer.maximumPixels && (300...2000).contains(drawingHeight)
+    }
     var pixels: CGSize { CGSize(width: CGFloat(width), height: CGFloat(height)) }
     var drawingHeight: Double { 390.0 * Double(height) / Double(width) }
 
@@ -257,7 +260,8 @@ enum LocalMediaFiles {
         guard identifier(data) == ident else { throw CocoaError(.fileReadCorruptFile) }
         return data
     }
-    /// Serializes manifest changes and media cleanup across app/Shortcut processes.
+    /// Serializes cooperating callers sharing this root. This does not grant
+    /// another sandbox access or configure an App Group entitlement.
     static func withLock<T>(root: URL, _ action: () throws -> T) throws -> T {
         let fd = open(root.appendingPathComponent(".storage.lock").path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
         guard fd >= 0 else { throw CocoaError(.fileWriteUnknown) }

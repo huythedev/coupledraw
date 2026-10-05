@@ -38,6 +38,9 @@ struct BoardPatch: Codable {
     let id: String
     let remove: [String]
     let add: [SharedStroke]
+    // Captured at enqueue, never advanced by a refresh or a retry. Nil keeps
+    // legacy queued patches decodable without inventing a newer base version.
+    var baseRevision: Int? = nil
 }
 
 /// Stroke edits, not whole-canvas replacement. Each queued patch has a stable ID
@@ -170,7 +173,8 @@ struct BoardPatch: Codable {
 
     private func enqueue(_ edit: Edit) throws {
         var next = saved
-        next.pending.append(BoardPatch(id: UUID().uuidString, remove: edit.removed.map(\.id), add: edit.added))
+        next.pending.append(BoardPatch(id: UUID().uuidString, remove: edit.removed.map(\.id), add: edit.added,
+                                       baseRevision: saved.revision))
         try write(next)
     }
 
