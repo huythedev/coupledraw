@@ -18,7 +18,7 @@ Active art remains limited to 3,000 strokes or 3 MB of stroke archives. Deleted 
 
 Cleanup starts only after **both phones** advertise history protocol 1. Every new queued operation captures its base revision when enqueued and keeps it on retry. Recent operation IDs remain idempotent. An operation whose digest has been cleaned up cannot replay against an older base revision: the server returns HTTP 409 and the current full board. The app saves a recovered draft in History before dropping that stale queue and refreshing. Clients requesting a delta from before the checkpoint receive the full active board instead.
 
-Legacy clients lack captured revisions, so their pairs retain history until both phones are upgraded. Legacy queued patches are decoded with an unknown base; if they arrive after cleanup, they take the same History recovery path. Upgrade the server and both apps together. Do not downgrade a pair to an older app after cleanup has begun. Deleted SQLite rows free pages for reuse; `compact-media` can also reclaim database space during maintenance.
+Legacy clients lack captured revisions, so their pairs retain history until both phones support cleanup. Reconnecting with an older client revokes that phone's permission, stopping further cleanup. A current app's legacy queued patches take the History recovery path after a checkpoint. An older app without checkpoint support receives an update error for editing that board; other canvases still work. Previously compacted history cannot be recovered by a downgrade. Server and app upgrades can otherwise happen independently; see [compatibility](compatibility.md). Deleted SQLite rows free pages for reuse; `compact-media` can also reclaim database space during maintenance.
 
 ## Shortcut memory use
 

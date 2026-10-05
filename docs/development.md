@@ -26,7 +26,7 @@ The app persists and synchronizes received originals and a local relay manifest 
 
 In Our art, completed stroke operations are batched briefly and sent to the paired service. The service returns deltas to active clients; idle long-poll responses carry no artwork. Offline edits are queued with stable operation IDs and retried. Independent strokes merge. A conflicting edit to the same stroke is saved as a recovered draft on the losing phone. Apply flushes local edits, checks current board/revision numbers, and publishes a snapshot. Background photo and color changes are shared on Apply. The board is capped at 3,000 strokes or 3 MB of stroke archives.
 
-Foreground live updates require the app to remain active. A locked or suspended phone catches up when opened or when its Shortcut is invoked. There is no location-based background execution. Both phone apps and the server should be upgraded together for the shared whiteboard protocol.
+Foreground live updates require the app to remain active. A locked or suspended phone catches up when opened or when its Shortcut is invoked. There is no location-based background execution. App and server upgrades can happen separately; capability negotiation preserves common features and older shared drafts. New whiteboard migration waits for both phones' support on discovery-capable servers. See [compatibility](compatibility.md) for the protocol contract and checkpoint limits.
 
 ## Robustness and security checks
 

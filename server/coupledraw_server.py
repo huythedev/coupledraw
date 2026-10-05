@@ -38,6 +38,11 @@ MAX_PAIRING_SESSIONS = 100
 BOARD_HISTORY_REVISIONS = 1024
 BOARD_MAX_TOMBSTONES = 6000
 BOARD_MAX_OPERATIONS = 4096
+API_VERSIONS = [1]
+# Additive discovery: never replace v1 semantics with a different protocol.
+# Future versions must list v1 alongside new versions while it is supported.
+PROTOCOLS = {name: [1] for name in ("wallpaper", "photos", "stickers", "whiteboard", "legacyDrafts", "pairing", "boardHistory")}
+PROTOCOLS["mediaRelay"] = [2]
 pairing_changed = threading.Condition(threading.RLock())
 
 
@@ -326,6 +331,7 @@ def connect(path, initialize=True):
         db.execute("CREATE TABLE IF NOT EXISTS media_generation (pair_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS board_history (pair_id TEXT PRIMARY KEY, minimum_revision INTEGER NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS board_clients (pair_id TEXT NOT NULL, role TEXT NOT NULL, history_protocol INTEGER NOT NULL, PRIMARY KEY(pair_id, role))")
+        db.execute("CREATE TABLE IF NOT EXISTS client_protocols (pair_id TEXT NOT NULL, role TEXT NOT NULL, protocols TEXT NOT NULL, PRIMARY KEY(pair_id, role))")
         db.execute("CREATE TABLE IF NOT EXISTS board_operation_history (pair_id TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(pair_id, id))")
         db.execute("CREATE INDEX IF NOT EXISTS board_strokes_active ON board_strokes(pair_id, deleted_revision, added_revision)")
         db.execute("CREATE INDEX IF NOT EXISTS board_operations_revision ON board_operation_history(pair_id, revision)")
@@ -358,14 +364,69 @@ def ensure_shared_base(db_path, pair_id):
 
 
 def register_board_client(db_path, member, protocol):
-    if protocol != "1":
-        return
+    supported = int(protocol == "1")
     with read_connection(db_path) as db:
-        if db.execute("SELECT 1 FROM board_clients WHERE pair_id=? AND role=? AND history_protocol=1", member).fetchone():
+        row = db.execute("SELECT history_protocol FROM board_clients WHERE pair_id=? AND role=?", member).fetchone()
+        if (row[0] if row else 0) == supported:
             return
     with connect(db_path, initialize=False) as db:
         db.execute("BEGIN IMMEDIATE")
-        db.execute("INSERT OR REPLACE INTO board_clients VALUES (?, ?, 1)", member)
+        db.execute("INSERT OR REPLACE INTO board_clients VALUES (?, ?, ?)", (*member, supported))
+
+
+def register_protocols(db_path, member, headers):
+    raw = headers.get("X-CoupleDraw-Protocols")
+    if raw is None:
+        # Known v1 client hints. Do not guess capabilities of truly old builds.
+        protocols = {"wallpaper": [1], "photos": [1], "legacyDrafts": [1]}
+        if headers.get("X-CoupleDraw-Media") in ("1", "2"):
+            protocols["stickers"] = [1]
+        if headers.get("X-CoupleDraw-Media") == "2":
+            protocols["mediaRelay"] = [2]
+            protocols["whiteboard"] = [1]
+        if headers.get("X-CoupleDraw-Board") is not None or headers.get("X-CoupleDraw-Board-History") == "1":
+            protocols["whiteboard"] = [1]
+    else:
+        try:
+            if len(raw) > 2048:
+                raise ValueError()
+            protocols = json.loads(raw)
+            if (not isinstance(protocols, dict) or len(protocols) > 32 or
+                    any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,31}", name) or
+                        not isinstance(versions, list) or len(versions) > 8 or
+                        any(type(v) is not int or not 1 <= v <= 1000 for v in versions)
+                        for name, versions in protocols.items())):
+                raise ValueError()
+        except (ValueError, TypeError):
+            return  # Discovery is optional; malformed hints cannot break v1.
+    encoded = json.dumps({"protocols": protocols, "declared": raw is not None}, sort_keys=True, separators=(",", ":"))
+    with read_connection(db_path) as db:
+        row = db.execute("SELECT protocols FROM client_protocols WHERE pair_id=? AND role=?", member).fetchone()
+        if row and row[0] == encoded:
+            return
+    with connect(db_path, initialize=False) as db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("INSERT OR REPLACE INTO client_protocols VALUES (?, ?, ?)", (*member, encoded))
+    pair_events.notify(member[0])
+
+
+def capabilities(db=None, member=None):
+    protocols = dict(PROTOCOLS)
+    peer = None
+    ready = None
+    if member is not None:
+        row = db.execute("SELECT protocols FROM client_protocols WHERE pair_id=? AND role<>?", member).fetchone()
+        if row:
+            declaration = json.loads(row[0])
+            # Inferred legacy hints prove presence, not absence. An older app
+            # cannot be declared incompatible just because it lacks discovery.
+            peer = declaration.get("protocols") if declaration.get("declared") is True else None
+        board_exists = bool(db.execute("SELECT 1 FROM whiteboards WHERE pair_id=?", (member[0],)).fetchone())
+        ready = board_exists or {row[0] for row in db.execute("SELECT role, protocols FROM client_protocols WHERE pair_id=?", (member[0],))
+                                 if 1 in json.loads(row[1]).get("protocols", json.loads(row[1])).get("whiteboard", [])} == {"A", "B"}
+        if board_exists:
+            protocols["legacyDrafts"] = []
+    return {"apiVersions": API_VERSIONS, "protocols": protocols, "peerProtocols": peer, "whiteboardReady": ready}
 
 
 def compact_board(db, pair_id, revision):
@@ -771,6 +832,15 @@ def serve(db_path, host, port, media_dir=None):
             self.client_role = "-"
             self.event_detail = ""
 
+        def check_api(self):
+            requested = self.headers.get("X-CoupleDraw-API")
+            if requested is None or requested in {str(v) for v in API_VERSIONS}:
+                return True
+            self.reply(426, {"error": "This request needs another CoupleDraw API version. Existing v1 clients are still supported.",
+                             "code": "update_required", "feature": "wallpaper", "target": "server",
+                             "apiVersions": API_VERSIONS})
+            return False
+
         def reply(self, status, body, headers=None):
             data = json.dumps(body, separators=(",", ":")).encode()
             self.send_response(status)
@@ -798,12 +868,17 @@ def serve(db_path, host, port, media_dir=None):
 
         def do_GET(self):
             self.begin_request()
+            if not self.check_api():
+                return
+            if self.path == "/v1/capabilities":
+                return self.reply(200, capabilities())
             member = self.member()
             if not member:
                 return self.reply(401, {"error": "Invalid pairing token"})
             if self.path != "/v1/state":
                 return self.reply(404, {"error": "Not found"})
             register_board_client(db_path, member, self.headers.get("X-CoupleDraw-Board-History"))
+            register_protocols(db_path, member, self.headers)
             ensure_shared_base(db_path, member[0])
             preferences = [part.strip().lower() for part in self.headers.get("Prefer", "").split(",")]
             wait = next((int(part[5:]) for part in preferences
@@ -839,8 +914,9 @@ def serve(db_path, host, port, media_dir=None):
                 board_row = db.execute("SELECT w.revision, COALESCE(h.minimum_revision, 0) FROM whiteboards w LEFT JOIN board_history h ON h.pair_id=w.pair_id WHERE w.pair_id=?",
                                        (member[0],)).fetchone()
                 generation = db.execute("SELECT revision FROM media_generation WHERE pair_id=?", (member[0],)).fetchone()
+                supported = capabilities(db, member)
                 marker = json.dumps([member[1], push, topic, ntfy, rows, drafts,
-                                     board_row, relay, generation[0] if generation else 0, wallpaper],
+                                     board_row, relay, generation[0] if generation else 0, wallpaper, supported],
                                     separators=(",", ":")).encode()
                 etag = '"' + hashlib.sha256(marker).hexdigest()[:24] + '"'
                 if not hydrate:
@@ -862,7 +938,8 @@ def serve(db_path, host, port, media_dir=None):
                             items.append(media.restore(body, relay))
                 base_row = db.execute("SELECT body FROM shared_base WHERE pair_id=?", (member[0],)).fetchone()
                 base = None
-                if self.headers.get("X-CoupleDraw-Base-Known") != "1":
+                migrating = board_row is None and supported["whiteboardReady"]
+                if self.headers.get("X-CoupleDraw-Base-Known") != "1" or migrating:
                     base = json.loads(base_row[0])
                     if wallpaper and base:
                         base["drawingData"] = ""
@@ -871,13 +948,14 @@ def serve(db_path, host, port, media_dir=None):
                     {"role": role, "revision": revision, "drawingData": data, "drawingHeight": height}
                     for role, revision, data, height in db.execute(
                         "SELECT role, revision, drawing_data, drawing_height FROM shared_drafts WHERE pair_id=? ORDER BY role", (member[0],))
-                    if known_drafts.get(role) != revision]
+                    if migrating or known_drafts.get(role) != revision]
                 return etag, {"role": member[1], "pushConfigured": push,
                               "ntfyTopic": topic, "ntfyBaseURL": ntfy,
                               "hasPartnerArt": any(source == ("b" if member[1] == "A" else "a") for source, _ in rows),
                               "items": items, "mediaOnlyItems": media_only if wallpaper else None,
                               "mediaProtocol": 2 if relay else 1, "mediaInventory": inventory if relay else None,
                               "mediaRequests": requests, "boardProtocol": 1, "boardHistoryProtocol": 1,
+                              "capabilities": supported,
                               "board": None if wallpaper else board_update(db, member[0], self.board_since()),
                               "boardSeedTag": None if wallpaper or board_row else legacy_seed(db, member[0], initialize=False),
                               "sharedBase": base, "drafts": changed_drafts}
@@ -896,7 +974,24 @@ def serve(db_path, host, port, media_dir=None):
                             with media.access(), read_connection(db_path) as db:
                                 etag, payload = capture(db, True)
                         except (OSError, ValueError):
-                            return self.reply(503, {"error": "A stored photo is unavailable. Update CoupleDraw on both phones for temporary media delivery, or re-apply the photo from a phone."},
+                            if not relay:
+                                # An older app cannot request donor recovery itself.
+                                # Reopen delivery on its behalf, then return inline
+                                # media once a modern partner restores the original.
+                                with media.access(exclusive=True), connect(db_path, initialize=False) as db:
+                                    db.execute("BEGIN IMMEDIATE")
+                                    changed = False
+                                    for key, ids in media.references(db, member[0]).items():
+                                        missing = {ident for ident in ids if not media.path(ident).exists()}
+                                        if missing:
+                                            changed |= db.execute("DELETE FROM media_deliveries WHERE pair_id=? AND source=? AND revision=? AND role=?", (*key, member[1])).rowcount > 0
+                                            for ident in missing:
+                                                changed |= db.execute("INSERT OR IGNORE INTO media_requests VALUES (?, ?, ?)", (member[0], ident, member[1])).rowcount > 0
+                                    if changed:
+                                        media.changed(db, member[0])
+                                if changed:
+                                    pair_events.notify(member[0])
+                            return self.reply(503, {"error": "Waiting for an original photo or sticker. Open CoupleDraw on the partner's phone to resend it, or Apply it again."},
                                               {"Retry-After": "5"})
                         break
                     remaining = deadline - time.monotonic()
@@ -1030,7 +1125,6 @@ def serve(db_path, host, port, media_dir=None):
                 raise ValueError("Invalid media identifiers")
 
         def edit_board(self, member, seed=False):
-            register_board_client(db_path, member, self.headers.get("X-CoupleDraw-Board-History"))
             try:
                 obj = self.read_json(MAX_BODY)
                 if not isinstance(obj, dict):
@@ -1052,6 +1146,10 @@ def serve(db_path, host, port, media_dir=None):
                 digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             except (ValueError, KeyError, TypeError, binascii.Error):
                 return self.reply(400, {"error": "Invalid whiteboard request"})
+            register_board_client(db_path, member, "1" if base_revision is not None else self.headers.get("X-CoupleDraw-Board-History"))
+            hints = dict(self.headers)
+            hints.setdefault("X-CoupleDraw-Board", "0")
+            register_protocols(db_path, member, hints)
             with (media.access(exclusive=True) if seed else nullcontext()), connect(db_path, initialize=False) as db:
                 # SQLite serializes writes across processes as well as threads.
                 db.execute("BEGIN IMMEDIATE")
@@ -1059,6 +1157,10 @@ def serve(db_path, host, port, media_dir=None):
                 if seed:
                     if current is not None:
                         return self.reply(200, current)
+                    supported = capabilities(db, member)
+                    if self.headers.get("X-CoupleDraw-Protocols") is not None and not supported["whiteboardReady"]:
+                        return self.reply(409, {"error": "Ask your partner to update CoupleDraw before enabling the shared whiteboard. Existing shared drafts and other canvases still sync.",
+                                                "code": "update_required", "feature": "whiteboard", "target": "partner"})
                     if obj.get("seedTag") != legacy_seed(db, member[0]):
                         return self.reply(409, {"error": "The old shared draft changed; refresh before upgrading"})
                     revision = 1
@@ -1071,6 +1173,9 @@ def serve(db_path, host, port, media_dir=None):
                             return self.reply(409, {"error": "Operation ID reused with different edits"})
                         return self.reply(200, board_update(db, member[0], self.board_since()))
                     minimum = current["minimumRevision"]
+                    if minimum > 0 and base_revision is None and self.headers.get("X-CoupleDraw-Board-History") != "1":
+                        return self.reply(409, {"error": "Update CoupleDraw on this iPhone to safely edit this checkpointed board. Other canvases still sync.",
+                                                "code": "update_required", "feature": "boardHistory", "target": "app", "board": current})
                     if ((minimum > 0 and base_revision is None) or
                             (base_revision is not None and not minimum <= base_revision <= current["revision"])):
                         return self.reply(409, {"error": "These edits predate a whiteboard checkpoint. Their local version can be kept in History.",
@@ -1110,6 +1215,8 @@ def serve(db_path, host, port, media_dir=None):
 
         def do_POST(self):
             self.begin_request()
+            if not self.check_api():
+                return
             if self.path in ("/v1/pairing/create", "/v1/pairing/join", "/v1/pairing/status", "/v1/pairing/cancel"):
                 try:
                     obj = self.read_json(1024)
@@ -1143,6 +1250,7 @@ def serve(db_path, host, port, media_dir=None):
                                (member[0], member[1], device_token))
                 return self.reply(200, {"registered": True, "pushConfigured": push_configured()})
             if self.path == "/v1/draft":
+                register_board_client(db_path, member, self.headers.get("X-CoupleDraw-Board-History"))
                 try:
                     obj = self.read_json(1_500_000)
                     data = obj["drawingData"]
@@ -1156,7 +1264,8 @@ def serve(db_path, host, port, media_dir=None):
                 with connect(db_path, initialize=False) as db:
                     db.execute("BEGIN IMMEDIATE")
                     if board_update(db, member[0]) is not None:
-                        return self.reply(409, {"error": "This pair uses the new whiteboard. Update CoupleDraw on both phones."})
+                        return self.reply(409, {"error": "This pair uses the shared whiteboard. Update CoupleDraw on this iPhone to edit it. Other canvases still sync.",
+                                                "code": "update_required", "feature": "whiteboard", "target": "app"})
                     row = db.execute("SELECT revision FROM shared_drafts WHERE pair_id=? AND role=?",
                                      (member[0], member[1])).fetchone()
                     revision = (row[0] if row else 0) + 1
@@ -1225,6 +1334,9 @@ def serve(db_path, host, port, media_dir=None):
             with media.access(exclusive=True), connect(db_path, initialize=False) as db:
                 db.execute("BEGIN IMMEDIATE")
                 board = board_update(db, member[0]) if source == "together" else None
+                if board is not None and obj.get("boardRevision") is None:
+                    return self.reply(409, {"error": "Update CoupleDraw on this iPhone to Apply the live shared board. Other canvases still sync.",
+                                            "code": "update_required", "feature": "whiteboard", "target": "app"})
                 if board is not None and (type(obj.get("boardRevision")) is not int or obj["boardRevision"] != board["revision"]):
                     return self.reply(409, {"error": "The whiteboard changed. Refresh it and Apply again."})
                 row = db.execute("SELECT revision FROM snapshots WHERE pair_id=? AND source=?",
@@ -1263,7 +1375,7 @@ def serve(db_path, host, port, media_dir=None):
             # Timing ends at the response headers; asynchronous ntfy/APNs delivery is separate.
             elapsed = (time.perf_counter() - getattr(self, "started_at", time.perf_counter())) * 1000
             route = urlsplit(self.path).path
-            if route not in ("/v1/state", "/v1/device", "/v1/draft", "/v1/apply", "/v1/board/seed", "/v1/board/ops",
+            if route not in ("/v1/state", "/v1/capabilities", "/v1/device", "/v1/draft", "/v1/apply", "/v1/board/seed", "/v1/board/ops",
                              "/v1/media/ack", "/v1/media/request", "/v1/media/restore",
                              "/v1/pairing/create", "/v1/pairing/join", "/v1/pairing/status", "/v1/pairing/cancel"):
                 route = "<other>"

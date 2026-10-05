@@ -34,7 +34,7 @@ class SyncResourceHTTPTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(state["board"]["strokes"][0]["id"], "kept")
             status, _, _ = self.request("GET", "/v1/state", role="B",
-                                        headers={"If-None-Match": headers["ETag"], "Prefer": "wait=1"})
+                                        headers={"If-None-Match": headers["ETag"], "Prefer": "wait=1", "X-CoupleDraw-Board-History": "1"})
             self.assertEqual(status, 304)
             self.assertLess(time.monotonic() - start, 2.5)
 

@@ -136,9 +136,11 @@ struct PairingView: View {
             }
             .onChange(of: invitation) { _, value in accept(value) }
             .task(id: watchID) { await watchPairing() }
-            .alert("Could not connect", isPresented: Binding(get: { !message.isEmpty }, set: { if !$0 { message = "" } })) {
-                Button("OK") { message = "" }
-            } message: { Text(message) }
+            .alert(sync.updateNotice?.title ?? "Could not connect", isPresented: Binding(
+                get: { sync.updateNotice != nil || !message.isEmpty },
+                set: { if !$0 { sync.updateNotice = nil; message = "" } })) {
+                Button("OK") { sync.updateNotice = nil; message = "" }
+            } message: { Text(sync.updateNotice?.errorDescription ?? message) }
         }
     }
 

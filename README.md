@@ -29,7 +29,7 @@ python3 server/coupledraw_server.py serve --db coupledraw.sqlite3 --host 0.0.0.0
 
 In **Pair** enter `http://YOUR_COMPUTER_LAN_IP:8787`, then create an invite. Its link and QR code include that server address; when entering just the six-digit code, both phones must select the same server. Use the computer's LAN address, not `localhost`; allow Local Network access if prompted. Keep the server running. This HTTP setup is only for a trusted local network; use HTTPS for an Internet-facing server. The optional `create-pair --custom-tokens` command still prompts for private A/B tokens for manual pairing.
 
-On a VPS, copy the **complete** script, run `serve` with its default `127.0.0.1:8787` binding, and put an HTTPS reverse proxy in front of it. Enter that HTTPS base address in Pair. The app creates pairs, so no `create-pair` command is needed. Keep the database and media directory when upgrading the app and server together. See [server setup](docs/server.md) for Ubuntu/systemd, Caddy, Tailscale, backup, logging, and optional alerts.
+On a VPS, copy the **complete** script, run `serve` with its default `127.0.0.1:8787` binding, and put an HTTPS reverse proxy in front of it. Enter that HTTPS base address in Pair. The app creates pairs, so no `create-pair` command is needed. Keep the database and media directory during upgrades. App and server builds can differ: supported features keep working, and an unavailable feature asks for the relevant update. See [compatibility](docs/compatibility.md) and [server setup](docs/server.md) for details.
 
 ## How updates work
 
@@ -49,5 +49,6 @@ While open, the app waits for server changes and refreshes promptly. While close
 - [Build and signing](docs/build-and-sign.md) — Xcode, unsigned IPA, signing both targets, and releases.
 - [Development](docs/development.md) — tests, project generation, sync details, and current scope.
 - [Sync and resource limits](docs/sync-and-resources.md) — WAL reads, safe board cleanup, Shortcut memory, retry policy, and app sandbox.
+- [Compatibility](docs/compatibility.md) — mixed app/server versions, older partners, fallbacks, and feature-specific update prompts.
 
 Licensed under [MIT](LICENSE).

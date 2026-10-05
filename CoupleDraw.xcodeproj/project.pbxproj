@@ -35,6 +35,8 @@
 		FA700B5F4A26BE2FBF81A308 /* SharedWhiteboardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1988D44075226FAA20DB7B37 /* SharedWhiteboardTests.swift */; };
 		FC1D4C0F5C7E077279D96F62 /* PartnerTargetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51643CA4A5C466217339A4FA /* PartnerTargetView.swift */; };
 		FBB47FD8A1B5836EF8D316A7 /* StickerEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC7FFADCF1343175EACC1EEB /* StickerEditor.swift */; };
+		C2DCF04681004BA8A5B897B9 /* SyncCapabilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A43BC1241EEADC8AF29A417 /* SyncCapabilities.swift */; };
+		3D4D5160788F0CF304279835 /* CompatibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB1E08F5CCAB894E3918866C /* CompatibilityTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -104,6 +106,8 @@
 		F69417827A36EF2F289E27CF /* PairSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairSync.swift; sourceTree = "<group>"; };
 		FDD4F6179B3A2A11055053F2 /* PushProduction.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PushProduction.entitlements; sourceTree = "<group>"; };
 		CC7FFADCF1343175EACC1EEB /* StickerEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickerEditor.swift; sourceTree = "<group>"; };
+		0A43BC1241EEADC8AF29A417 /* SyncCapabilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncCapabilities.swift; sourceTree = "<group>"; };
+		DB1E08F5CCAB894E3918866C /* CompatibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompatibilityTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -135,6 +139,7 @@
 			isa = PBXGroup;
 			children = (
 				F48380891F1AA4B45AA1CBCD /* SyncResourcesTests.swift */,
+				DB1E08F5CCAB894E3918866C /* CompatibilityTests.swift */,
 				F5E0E4512969530383AB07F0 /* CanvasStoreTests.swift */,
 				1988D44075226FAA20DB7B37 /* SharedWhiteboardTests.swift */,
 			);
@@ -166,6 +171,7 @@
 			children = (
 				1D389F6AA9DBA59A86C33C5D /* RevisionStorage.swift */,
 				67439D3053CA40B136CE9380 /* SyncRetryPolicy.swift */,
+				0A43BC1241EEADC8AF29A417 /* SyncCapabilities.swift */,
 				9C7CA6F32CA643EF0707D174 /* BackgroundPhotoEditor.swift */,
 				64D766ED4C38C6DEA9C36D7D /* BackgroundPhotoLayout.swift */,
 				A6B1F6BC339FE3193FC2117B /* CameraCapture.swift */,
@@ -359,6 +365,7 @@
 			files = (
 				B88BA01B99AE3991451F7B9E /* RevisionStorage.swift in Sources */,
 				F608958CF3CF3C869A1544A1 /* SyncRetryPolicy.swift in Sources */,
+				C2DCF04681004BA8A5B897B9 /* SyncCapabilities.swift in Sources */,
 				817BBBADABA5196E5B9AC912 /* BackgroundPhotoEditor.swift in Sources */,
 				C28076E89F8919C007B58A18 /* BackgroundPhotoLayout.swift in Sources */,
 				155D0BDC938EBBC72D5AFBAF /* CameraCapture.swift in Sources */,
@@ -387,6 +394,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0E0F4E6482FD79CD1ED01284 /* SyncResourcesTests.swift in Sources */,
+				3D4D5160788F0CF304279835 /* CompatibilityTests.swift in Sources */,
 				7C7FCE01A37DEBF39F9AF361 /* CanvasStoreTests.swift in Sources */,
 				FA700B5F4A26BE2FBF81A308 /* SharedWhiteboardTests.swift in Sources */,
 			);

@@ -22,13 +22,15 @@ struct FullScreenCanvasView: View {
 
     private var record: CanvasRecord { store.displayedRecord(slot) }
     private var shared: Bool { slot == .together && store.whiteboard != nil }
+    private var layered: Bool { slot == .together && store.liveSharedEnabled && !shared }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(slot.title).font(.headline)
-                    Text(shared ? "Draw, move or erase any stroke · syncs after each stroke" :
+                    Text(shared ? "Draw, move or erase any stroke · syncs after each stroke" : layered ?
+                         "Your strokes sync live · your partner's strokes stay separate" :
                          "Two fingers to move or zoom")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -51,6 +53,9 @@ struct FullScreenCanvasView: View {
                     .font(.caption2).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal).padding(.bottom, 6)
+            } else if slot == .together, sync.configured, !layered {
+                Button("Enable live shared drawing") { _ = sync.requireSharedEditing(store: store) }
+                    .font(.caption).padding(.horizontal).padding(.bottom, 6)
             }
             GeometryReader { geometry in
                 let generation = canvasGeneration
@@ -61,7 +66,11 @@ struct FullScreenCanvasView: View {
                     ZoomedCanvasBackground(photo: record.backgroundPhoto,
                                            color: record.backgroundHex,
                                            viewport: viewport)
-                    DrawingSurface(drawingData: record.drawingData,
+                    if layered {
+                        ZoomedCanvasArtworkView(drawingData: store.sharedReadOnlyData,
+                                                drawingSize: drawingSize, viewport: viewport)
+                    }
+                    DrawingSurface(drawingData: layered ? store.sharedOwnData : record.drawingData,
                                    drawingSize: drawingSize,
                                    tool: tool,
                                    color: UIColor(inkColor).resolvedColor(
@@ -71,6 +80,10 @@ struct FullScreenCanvasView: View {
                                        guard generation == canvasGeneration else { return }
                                        if shared {
                                            store.whiteboard?.drawingChanged(data)
+                                           sync.scheduleSharedDraft(store: store)
+                                       } else if layered {
+                                           store.updateSharedOwn(data)
+                                           sync.markDirty(.together)
                                            sync.scheduleSharedDraft(store: store)
                                        } else if store.record(slot).drawingData != data {
                                            store.updateDrawing(data, on: slot)
@@ -96,7 +109,7 @@ struct FullScreenCanvasView: View {
                                            sync.scheduleSharedDraft(store: store)
                                        }
                                    }, onPasteImages: pasteImages)
-                    .id("\(record.canvasID.uuidString)-\(record.drawingHeight)-\(shared)-\(generation)")
+                    .id("\(record.canvasID.uuidString)-\(record.drawingHeight)-\(shared)-\(layered)-\(generation)")
                     ZoomedStickerArtwork(stickers: record.stickers, viewport: viewport)
                 }
                 .frame(width: drawingSize.width * fit, height: drawingSize.height * fit)
@@ -227,7 +240,10 @@ struct FullScreenCanvasView: View {
                     store.whiteboard?.clear()
                     sync.scheduleSharedDraft(store: store)
                 } else {
-                    store.clearCurrentDrawing(on: slot)
+                    if layered {
+                        store.updateSharedOwn(PKDrawing().dataRepresentation())
+                        sync.scheduleSharedDraft(store: store)
+                    } else { store.clearCurrentDrawing(on: slot) }
                     sync.markDirty(slot)
                 }
                 canvasView = nil
@@ -238,18 +254,25 @@ struct FullScreenCanvasView: View {
             Text(shared ? "This clears all strokes from the shared board on both phones. The background and saved History remain. You can Undo this while no one has changed those strokes." :
                  "This clears the current editable drawing on this phone. The background and saved History remain. Tap Apply to share the empty drawing.")
         }
-        .alert("Could not update drawing", isPresented: Binding(
-            get: { store.errorMessage != nil },
-            set: { if !$0 { store.errorMessage = nil } }
+        .alert(sync.updateNotice?.title ?? "Could not update drawing", isPresented: Binding(
+            get: { sync.updateNotice != nil || store.errorMessage != nil },
+            set: { if !$0 { sync.updateNotice = nil; store.errorMessage = nil } }
         )) {
-            Button("OK") { store.errorMessage = nil }
-        } message: { Text(store.errorMessage ?? "Unknown error") }
+            Button("OK") { sync.updateNotice = nil; store.errorMessage = nil }
+        } message: { Text(sync.updateNotice?.errorDescription ?? store.errorMessage ?? "Unknown error") }
     }
 
     private func finishEditing() {
         if shared, let canvasView, store.whiteboard?.isEditing == true {
             store.whiteboard?.endEditing(canvasView.drawing.dataRepresentation())
             sync.scheduleSharedDraft(store: store)
+        } else if layered, let canvasView {
+            let data = canvasView.drawing.dataRepresentation()
+            if data != store.sharedOwnData {
+                store.updateSharedOwn(data)
+                sync.markDirty(.together)
+                sync.scheduleSharedDraft(store: store)
+            }
         }
     }
 
