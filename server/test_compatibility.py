@@ -95,6 +95,15 @@ class CompatibilityHTTPTests(unittest.TestCase):
         self.assertIsNone(state["capabilities"]["peerProtocols"])
         self.assertEqual(state["boardProtocol"], 1)
 
+    def test_lowercase_headers_keep_explicit_capabilities_during_board_edits(self):
+        self.seed(); self.modern(); self.modern("B")
+        headers = {"x-coupledraw-protocols": json.dumps(server.PROTOCOLS), "x-coupledraw-board-history": "1"}
+        status, _, _ = self.request("POST", "/v1/board/ops", {
+            "id": "lowercase", "baseRevision": 1, "add": [test_whiteboard.stroke("kept")], "remove": []}, headers=headers)
+        self.assertEqual(status, 200)
+        _, state, _ = self.modern("B")
+        self.assertEqual(state["capabilities"]["peerProtocols"]["stickers"], [1])
+
     def test_legacy_reconnect_revokes_gc_permission_and_retains_recent_retries(self):
         self.seed()
         self.modern(); self.modern("B")

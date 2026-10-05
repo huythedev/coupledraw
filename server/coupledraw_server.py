@@ -374,7 +374,7 @@ def register_board_client(db_path, member, protocol):
         db.execute("INSERT OR REPLACE INTO board_clients VALUES (?, ?, ?)", (*member, supported))
 
 
-def register_protocols(db_path, member, headers):
+def register_protocols(db_path, member, headers, *, whiteboard=False):
     raw = headers.get("X-CoupleDraw-Protocols")
     if raw is None:
         # Known v1 client hints. Do not guess capabilities of truly old builds.
@@ -384,7 +384,7 @@ def register_protocols(db_path, member, headers):
         if headers.get("X-CoupleDraw-Media") == "2":
             protocols["mediaRelay"] = [2]
             protocols["whiteboard"] = [1]
-        if headers.get("X-CoupleDraw-Board") is not None or headers.get("X-CoupleDraw-Board-History") == "1":
+        if whiteboard or headers.get("X-CoupleDraw-Board") is not None or headers.get("X-CoupleDraw-Board-History") == "1":
             protocols["whiteboard"] = [1]
     else:
         try:
@@ -422,8 +422,9 @@ def capabilities(db=None, member=None):
             # cannot be declared incompatible just because it lacks discovery.
             peer = declaration.get("protocols") if declaration.get("declared") is True else None
         board_exists = bool(db.execute("SELECT 1 FROM whiteboards WHERE pair_id=?", (member[0],)).fetchone())
-        ready = board_exists or {row[0] for row in db.execute("SELECT role, protocols FROM client_protocols WHERE pair_id=?", (member[0],))
-                                 if 1 in json.loads(row[1]).get("protocols", json.loads(row[1])).get("whiteboard", [])} == {"A", "B"}
+        declarations = [(role, json.loads(raw)) for role, raw in db.execute("SELECT role, protocols FROM client_protocols WHERE pair_id=?", (member[0],))]
+        ready = board_exists or {role for role, declaration in declarations
+                                 if 1 in declaration.get("protocols", declaration).get("whiteboard", [])} == {"A", "B"}
         if board_exists:
             protocols["legacyDrafts"] = []
     return {"apiVersions": API_VERSIONS, "protocols": protocols, "peerProtocols": peer, "whiteboardReady": ready}
@@ -1147,9 +1148,7 @@ def serve(db_path, host, port, media_dir=None):
             except (ValueError, KeyError, TypeError, binascii.Error):
                 return self.reply(400, {"error": "Invalid whiteboard request"})
             register_board_client(db_path, member, "1" if base_revision is not None else self.headers.get("X-CoupleDraw-Board-History"))
-            hints = dict(self.headers)
-            hints.setdefault("X-CoupleDraw-Board", "0")
-            register_protocols(db_path, member, hints)
+            register_protocols(db_path, member, self.headers, whiteboard=True)
             with (media.access(exclusive=True) if seed else nullcontext()), connect(db_path, initialize=False) as db:
                 # SQLite serializes writes across processes as well as threads.
                 db.execute("BEGIN IMMEDIATE")
