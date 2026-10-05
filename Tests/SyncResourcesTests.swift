@@ -15,6 +15,7 @@ import ImageIO
         let folder = try root()
         defer { try? FileManager.default.removeItem(at: folder) }
         let main = CanvasStore(root: folder)
+        XCTAssertNil(main.errorMessage)
         main.updateBackground("#123456", on: .first)
         main.updateBackground("#654321", on: .together)
         XCTAssertNotNil(main.apply(.first))

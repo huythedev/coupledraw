@@ -1377,6 +1377,34 @@ import UIKit
         XCTAssertEqual(requests, 2)
     }
 
+    func testSharedShortcutUsesLatestAppliedArtWhilePreservingDirtyBackgroundAndLegacyQueue() async throws {
+        let restorePreferences = isolatedSyncPreferences()
+        defer { restorePreferences() }
+        let (main, root) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        main.updateBackground("#0000FF", on: .together)
+        UserDefaults.standard.set("https://shared-shortcut.invalid", forKey: "syncEndpoint")
+        UserDefaults.standard.set([CanvasSlot.together.rawValue], forKey: "syncDirty")
+        let shortcut = CanvasStore(root: root, shortcutChoice: .together)
+        let applied = SyncedRevision(source: "together", revision: 1, author: "B", backgroundHex: "#00FF00",
+                                     backgroundPhoto: nil, drawingData: Data(), drawingHeight: 844)
+        let unselected = SyncedRevision(source: "b", revision: 1, author: "B", backgroundHex: "#123456",
+                                        backgroundPhoto: nil, drawingData: Data([1, 2, 3]), drawingHeight: 844)
+        let sync = PairSync(transport: { request in
+            // Older servers ignore the wallpaper header and return all canvases.
+            try self.stateReply(request, items: [applied, unselected])
+        }, readToken: { "private-A" })
+        defer { sync.suspend() }
+        try await sync.refreshForShortcut(store: shortcut, choice: .together)
+        XCTAssertNil(shortcut.whiteboard)
+        XCTAssertEqual(shortcut.record(.together).backgroundHex, "#0000FF")
+        let history = CanvasStore(root: root).revisions
+        XCTAssertEqual(history.count, 1)
+        XCTAssertEqual(history.first?.document.backgroundHex, "#00FF00")
+        XCTAssertEqual(shortcut.record(.second).backgroundHex, "#000000")
+        XCTAssertTrue(UserDefaults.standard.stringArray(forKey: "syncDirty")?.contains(CanvasSlot.together.rawValue) == true)
+    }
+
     func testStateFailuresBackOffWithoutRetryAfterAndResetOnSuccess() async throws {
         let restorePreferences = isolatedSyncPreferences()
         defer { restorePreferences() }

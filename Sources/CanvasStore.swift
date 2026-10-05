@@ -104,7 +104,9 @@ import ImageIO
             for slot in readableSlots {
                 try migrateMedia(CanvasRecord.self, at: rootURL.appendingPathComponent("\(slot.rawValue).json"), decoder: localDecoder)
             }
-            if savedRevisions != nil { try migrateMedia([AppliedRevision].self, at: revisionsURL, decoder: localDecoder) }
+            if savedRevisions != nil, FileManager.default.fileExists(atPath: revisionsURL.path) {
+                try migrateMedia([AppliedRevision].self, at: revisionsURL, decoder: localDecoder)
+            }
             try FileManager.default.createDirectory(at: wallpaperCache, withIntermediateDirectories: true)
             var cacheURL = wallpaperCache
             var values = URLResourceValues()
@@ -495,43 +497,47 @@ import ImageIO
     }
 
     func decodeSynced<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
-        try LocalMediaFiles.withLock(root: root) {
-            let decoder = JSONDecoder()
-            decoder.userInfo[.coupleDrawMediaRoot] = root
-            decoder.userInfo[.coupleDrawNetworkMedia] = true
-            return try decoder.decode(type, from: data)
+        try autoreleasepool {
+            try LocalMediaFiles.withLock(root: root) {
+                let decoder = JSONDecoder()
+                decoder.userInfo[.coupleDrawMediaRoot] = root
+                decoder.userInfo[.coupleDrawNetworkMedia] = true
+                return try decoder.decode(type, from: data)
+            }
         }
     }
 
     /// Look at the full inventory even when unchanged canvases were omitted.
     /// Inline originals in this response need no recovery request.
     func missingRelayMedia(in payload: Data, inventory: [MediaReceipt], identity: String) throws -> [String] {
-        guard inventory.count <= 4, Set(inventory.map(\.source)).count == inventory.count else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        for receipt in inventory { try receipt.validate() }
-        let json = try JSONSerialization.jsonObject(with: payload) as? [String: Any] ?? [:]
-        var inline = Set<String>()
-        let documents = (json["items"] as? [[String: Any]] ?? [])
-            + (json["mediaOnlyItems"] as? [[String: Any]] ?? [])
-            + ((json["sharedBase"] as? [String: Any]).map { [$0] } ?? [])
-        for document in documents {
-            let images = (document["stickers"] as? [[String: Any]] ?? [])
-                + ((document["backgroundPhoto"] as? [String: Any]).map { [$0] } ?? [])
-            for image in images {
-                if let ident = image["mediaID"] as? String, let encoded = image["data"] as? String {
-                    guard let bytes = Data(base64Encoded: encoded), LocalMediaFiles.identifier(bytes) == ident else {
-                        throw CocoaError(.fileReadCorruptFile)
+        try autoreleasepool {
+            guard inventory.count <= 4, Set(inventory.map(\.source)).count == inventory.count else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            for receipt in inventory { try receipt.validate() }
+            let json = try JSONSerialization.jsonObject(with: payload) as? [String: Any] ?? [:]
+            var inline = Set<String>()
+            let documents = (json["items"] as? [[String: Any]] ?? [])
+                + (json["mediaOnlyItems"] as? [[String: Any]] ?? [])
+                + ((json["sharedBase"] as? [String: Any]).map { [$0] } ?? [])
+            for document in documents {
+                let images = (document["stickers"] as? [[String: Any]] ?? [])
+                    + ((document["backgroundPhoto"] as? [String: Any]).map { [$0] } ?? [])
+                for image in images {
+                    if let ident = image["mediaID"] as? String, let encoded = image["data"] as? String {
+                        guard let bytes = Data(base64Encoded: encoded), LocalMediaFiles.identifier(bytes) == ident else {
+                            throw CocoaError(.fileReadCorruptFile)
+                        }
+                        inline.insert(ident)
                     }
-                    inline.insert(ident)
                 }
             }
-        }
-        return try LocalMediaFiles.withLock(root: root) {
-            let trusted = Set(try relayManifest(identity: identity).snapshots.values.flatMap(\.mediaIDs))
-            return Set(inventory.flatMap(\.mediaIDs)).filter {
-                !inline.contains($0) && (!trusted.contains($0) || (try? LocalMediaFiles.read($0, root: root)) == nil)
-            }.sorted()
+            return try LocalMediaFiles.withLock(root: root) {
+                let trusted = Set(try relayManifest(identity: identity).snapshots.values.flatMap(\.mediaIDs))
+                return Set(inventory.flatMap(\.mediaIDs)).filter {
+                    !inline.contains($0) && (!trusted.contains($0) || (try? LocalMediaFiles.read($0, root: root)) == nil)
+                }.sorted()
+            }
         }
     }
 

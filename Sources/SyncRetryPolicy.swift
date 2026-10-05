@@ -65,7 +65,9 @@ enum SyncRetryGate {
         let id = identity(request)
         saved[id] = max(saved[id] ?? 0, now.timeIntervalSince1970 + delay + min(1, max(0, sample)))
         // Bound stale entries from previously configured servers.
-        if saved.count > 32 { saved = Dictionary(uniqueKeysWithValues: saved.sorted { $0.value > $1.value }.prefix(32)) }
+        if saved.count > 32 {
+            saved = Dictionary(uniqueKeysWithValues: saved.sorted { $0.value > $1.value }.prefix(32).map { ($0.key, $0.value) })
+        }
         defaults.set(saved, forKey: key)
     }
 }
