@@ -5,3 +5,12 @@ coupledraw.sqlite3
 *.sqlite3.media/
 build/
 dist/
+
+# Local Docker deployment configuration and private keys
+.env
+.env.*
+!.env.example
+compose.override.yaml
+secrets/
+__pycache__/
+*.py[cod]

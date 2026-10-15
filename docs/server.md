@@ -26,6 +26,94 @@ The service bounds concurrent connections to 64 and expires stalled socket I/O a
 
 New databases are created with owner-only permissions (`0600`); existing file permissions are preserved for compatibility. Keep an existing database, backups, and alert configuration private to the service user. App requests do not follow redirects: use the final HTTPS address in Pair and have the proxy serve `/v1/*` directly.
 
+## Docker (Linux containers on Windows, macOS, or Linux)
+
+Install Docker Engine with the Compose plugin, or Docker Desktop using Linux containers. From the repository root:
+
+```sh
+docker compose up --build --detach --wait
+docker compose logs --follow backend
+```
+
+The image listens on `0.0.0.0:8787` **inside** the container. Compose publishes it on host loopback at `127.0.0.1:8787`, ready for the HTTPS reverse proxy shown below. The app uses your proxy's HTTPS base URL. If the proxy runs in another container, connect it to the same Docker network and proxy to `backend:8787` instead of its own loopback. Allow long polls of up to 25 seconds.
+
+For trusted Wi-Fi testing, put these settings in a root `.env` file, then rerun `docker compose up --detach --wait`:
+
+```dotenv
+COUPLEDRAW_BIND_IP=0.0.0.0
+COUPLEDRAW_PORT=8787
+```
+
+Use `http://COMPUTER_LAN_IP:8787` in Pair. `COUPLEDRAW_PORT` changes only the published host port; keep the container port at 8787 for its health check. The `.env` file is ignored by Git. To return to the default private listener, remove `COUPLEDRAW_BIND_IP` and recreate the service.
+
+### Published images
+
+The **Backend Docker image** workflow tests native Linux AMD64 and ARM64 containers. After changes reach `main`, or a `v*` tag is pushed, it publishes `ghcr.io/huythedev/coupledraw-backend`. Tags include `latest` for main builds, `sha-<short commit>`, and the exact release tag. A pull request builds and tests without publishing. You can also run the workflow manually from main.
+
+Once the first publish succeeds, use the published image by adding this to `.env`:
+
+```dotenv
+COUPLEDRAW_IMAGE=ghcr.io/huythedev/coupledraw-backend:latest
+```
+
+```sh
+docker compose pull backend
+docker compose up --detach --no-build --wait
+```
+
+New GHCR packages are private by default. For anonymous pulls, set the package visibility to public in GitHub's package settings; otherwise sign in with `docker login ghcr.io` using an account/token with package read access. The workflow publishes with the repository's `GITHUB_TOKEN`; no Docker Hub credentials are needed. For reproducible deployments, select a commit tag or image digest instead of `latest`.
+
+### Data, upgrades, and maintenance
+
+The named `coupledraw-data` volume mounts at `/data`. It holds `/data/coupledraw.sqlite3`, SQLite WAL/SHM files, and `/data/coupledraw.sqlite3.media/` together. The service runs as UID/GID `10001:10001`, with a read-only application filesystem. Docker initializes the named volume with the correct ownership. If replacing it with a bind mount, make that directory writable by UID/GID 10001 and retain the existing database/media filenames. Run one backend instance per volume.
+
+For a source-build upgrade, run `docker compose up --build --detach --wait`. For a registry-image upgrade, pull and start with `--no-build` as above. Both preserve the volume. `docker compose down` also retains it; **do not use `down --volumes` for your deployment**, because that deletes its database and pending photos.
+
+For a consistent backup, stop the service, archive the whole volume, then start it again. This example uses a one-off container running as the same service user:
+
+```sh
+docker compose stop backend
+docker compose run --rm -T --no-deps --entrypoint tar backend -C /data -czf - . > coupledraw-backup.tgz
+docker compose start backend
+```
+
+Run the archive command in a shell that preserves binary stdout, such as Bash or PowerShell 7.4+. Check the archive before relying on it. Restore the database and media directory together while the service is stopped, preserving ownership for UID/GID 10001. Backups do not contain images already deleted after delivery.
+
+CLI maintenance uses the same volume. For example:
+
+```sh
+docker compose stop backend
+docker compose run --rm --no-deps backend compact --db /data/coupledraw.sqlite3
+docker compose start backend
+```
+
+For ntfy, stop the service, run `docker compose run --rm --no-deps backend configure-ntfy --db /data/coupledraw.sqlite3`, then start it again. For legacy manual pairs, use `create-pair --db /data/coupledraw.sqlite3` in the same way. Interactive commands need a terminal; do not use `-T` for private prompts.
+
+The image already includes the optional APNs dependencies. To enable APNs, create an untracked `compose.override.yaml`:
+
+```yaml
+services:
+  backend:
+    environment:
+      APNS_KEY_FILE: /run/secrets/apns.p8
+      APNS_KEY_ID: YOUR_KEY_ID
+      APNS_TEAM_ID: YOUR_TEAM_ID
+      APNS_TOPIC: YOUR_APP_BUNDLE_ID
+    volumes:
+      - ./secrets/AuthKey.p8:/run/secrets/apns.p8:ro
+```
+
+Keep the key in the ignored `secrets/` directory, readable by the container's UID 10001, and recreate the service. For an environment override of the persisted ntfy server, add `NTFY_BASE_URL` to the same `environment` mapping. See the alert sections below for the required iOS signing and setup.
+
+### Build or validate the image directly
+
+```sh
+docker build --tag coupledraw-backend:local ./server
+docker run --detach --name coupledraw-backend --restart unless-stopped -p 127.0.0.1:8787:8787 --mount source=coupledraw-data,target=/data coupledraw-backend:local
+```
+
+For development, `python3 tools/test-server-docker.py` builds Compose in a randomly named disposable project, checks health, non-root operation, APNs imports and maintenance, then recreates the service and checks that pairing credentials, drawing metadata, and pending photo bytes persist. It deletes only that test project's volume when finished.
+
 ## Ubuntu VPS with HTTPS
 
 Copy the **entire** `server/coupledraw_server.py` to `~/coupledraw/coupledraw_server.py`. On the VPS:

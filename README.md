@@ -31,6 +31,14 @@ In **Pair** enter `http://YOUR_COMPUTER_LAN_IP:8787`, then create an invite. Its
 
 On a VPS, copy the **complete** script, run `serve` with its default `127.0.0.1:8787` binding, and put an HTTPS reverse proxy in front of it. Enter that HTTPS base address in Pair. The app creates pairs, so no `create-pair` command is needed. Keep the database and media directory during upgrades. App and server builds can differ: supported features keep working, and an unavailable feature asks for the relevant update. See [compatibility](docs/compatibility.md) and [server setup](docs/server.md) for details.
 
+With Docker installed, you can instead run the backend from the repository root:
+
+```sh
+docker compose up --build --detach --wait
+```
+
+This binds host port 8787 to loopback for an HTTPS reverse proxy and keeps the database and pending media in a persistent volume. See [Docker setup](docs/server.md#docker-linux-containers-on-windows-macos-or-linux) for LAN access, published AMD64/ARM64 images, backups, and alerts.
+
 ## How updates work
 
 **My art** is yours to edit; your partner sees it after you Apply. **Partner's art** is view-only on your phone. **Our art** syncs completed stroke edits while the app is open; Apply saves a shared wallpaper snapshot. Each phone renders the chosen wallpaper at its own screen size.
