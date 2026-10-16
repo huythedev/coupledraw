@@ -1,0 +1,6 @@
+# Only runtime inputs belong in the build context; never include local data/keys.
+**
+!Dockerfile
+!.dockerignore
+!coupledraw_server.py
+!requirements-push.txt

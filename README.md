@@ -31,6 +31,94 @@ In **Pair** enter `http://YOUR_COMPUTER_LAN_IP:8787`, then create an invite. Its
 
 On a VPS, copy the **complete** script, run `serve` with its default `127.0.0.1:8787` binding, and put an HTTPS reverse proxy in front of it. Enter that HTTPS base address in Pair. The app creates pairs, so no `create-pair` command is needed. Keep the database and media directory during upgrades. App and server builds can differ: supported features keep working, and an unavailable feature asks for the relevant update. See [compatibility](docs/compatibility.md) and [server setup](docs/server.md) for details.
 
+## Docker backend setup
+
+Use Docker Desktop on Windows/macOS (with **Linux containers**) or Docker Engine with the Compose plugin on Linux. Docker runs the Python backend; the iPhone app is installed separately. Check that `docker version` and `docker compose version` work before continuing.
+
+### 1. Download and start the server
+
+```sh
+git clone https://github.com/huythedev/coupledraw.git
+cd coupledraw
+docker compose up --build --detach --wait
+```
+
+If you already cloned the repository, run the Compose command from its root directory. The first run builds the image and creates the data volume. Check status and logs with:
+
+```sh
+docker compose ps
+docker compose logs --follow backend
+```
+
+Press Ctrl+C to leave the log view; the server keeps running. Compose restarts the backend when Docker starts.
+
+### 2. Connect your iPhones
+
+**Trusted Wi-Fi:** create a file named `.env` beside `compose.yaml` containing:
+
+```dotenv
+COUPLEDRAW_BIND_IP=0.0.0.0
+COUPLEDRAW_PORT=8787
+```
+
+Apply the settings:
+
+```sh
+docker compose up --detach --wait
+```
+
+Keep both phones and the server on the same trusted network. Allow inbound TCP port 8787 on the server's private-network firewall. In **Pair** on both phones, enter `http://YOUR_COMPUTER_LAN_IP:8787`. One person taps **Create Pair**; the other taps **Join Pair** and enters the code. Use the computer's LAN IP rather than `localhost`, and permit Local Network access on iOS.
+
+**Internet/VPS:** keep the default loopback binding and put an HTTPS reverse proxy in front of `127.0.0.1:8787`. For example, with Caddy installed on the host and your domain pointing at the server:
+
+```caddyfile
+draw.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+Use `https://draw.example.com` in Pair on both phones. Keep host port 8787 private. If the proxy runs in Docker, connect it to the backend's network and proxy to `backend:8787`. See [server setup](docs/server.md) for proxy and networking details.
+
+These optional settings go in the root `.env` file:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `COUPLEDRAW_BIND_IP` | `127.0.0.1` | Host listener address; use `0.0.0.0` for trusted LAN access. |
+| `COUPLEDRAW_PORT` | `8787` | Published host port; the container always uses port 8787. |
+| `COUPLEDRAW_IMAGE` | `coupledraw-backend:local` | Image name for a local build or a published image. |
+
+### 3. Update or stop the server
+
+To update a server built from source:
+
+```sh
+git pull --ff-only
+docker compose up --build --detach --wait
+```
+
+To stop temporarily, run `docker compose stop backend`; resume with `docker compose start backend`. To remove the container while retaining its data, run `docker compose down`.
+
+The named `coupledraw-data` volume stores SQLite and pending photos together at `/data`. Rebuilding or recreating the container preserves this volume. **Do not run `docker compose down --volumes` unless you intend to delete the server's pairs, drawings, and pending photos.** Back up the whole volume while the service is stopped; follow the [backup and maintenance instructions](docs/server.md#data-upgrades-and-maintenance). Keep using the same Compose project/directory when upgrading so it selects the same volume.
+
+### Use a published image instead of building
+
+After a successful **Backend Docker image** workflow on `main`, AMD64 and ARM64 images are available at `ghcr.io/huythedev/coupledraw-backend`. Add this line to `.env` alongside any network settings:
+
+```dotenv
+COUPLEDRAW_IMAGE=ghcr.io/huythedev/coupledraw-backend:latest
+```
+
+Then install or update the published image:
+
+```sh
+docker compose pull backend
+docker compose up --detach --no-build --wait
+```
+
+The workflow also publishes commit tags (`sha-<short commit>`) and release tags (`v*`). Choose one of those tags or a digest when you need a fixed version. If the package is private, authenticate with `docker login ghcr.io` using credentials with package read access; the owner can make it public in GitHub's package settings.
+
+The image includes APNs dependencies. For ntfy, APNs keys, custom storage, and standalone `docker run` commands, see the [full Docker guide](docs/server.md#docker-linux-containers-on-windows-macos-or-linux).
+
 ## How updates work
 
 **My art** is yours to edit; your partner sees it after you Apply. **Partner's art** is view-only on your phone. **Our art** syncs completed stroke edits while the app is open; Apply saves a shared wallpaper snapshot. Each phone renders the chosen wallpaper at its own screen size.

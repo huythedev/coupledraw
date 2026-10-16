@@ -1,0 +1,27 @@
+services:
+  backend:
+    image: ${COUPLEDRAW_IMAGE:-coupledraw-backend:local}
+    build:
+      context: ./server
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${COUPLEDRAW_BIND_IP:-127.0.0.1}:${COUPLEDRAW_PORT:-8787}:8787"
+    volumes:
+      - coupledraw-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  coupledraw-data:
